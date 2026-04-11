@@ -12,8 +12,6 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
-from surem_client import SuremClient, clean_phone
-
 st.set_page_config(
     page_title="2026 토요상설공연 만족도 조사",
     page_icon="📱",
@@ -21,12 +19,17 @@ st.set_page_config(
 )
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+QUEUE_SHEET_NAME = "SMS_발송큐"
 LOG_SHEET_NAME = "SMS_발송기록"
 CONF_SHEET_NAME = "SMS_설정"
 
-DEFAULT_MSG_TEMPLATE = (
-    "[광주문화재단] 토요상설공연 만족도 조사에 참여해 주세요.\n{link}"
-)
+QUEUE_COLS = ["요청ID", "요청시각", "전화번호", "링크", "상태", "완료시각", "결과"]
+
+POLL_TIMEOUT_SEC = 20  # 워커 응답 대기 최대시간
+
+
+def clean_phone(phone):
+    return re.sub(r"[^0-9]", "", str(phone or ""))
 
 # ══════════════════════════════════════════════════════════════
 #  구글 시트 연결 (발송기록 + 설정)
@@ -93,52 +96,69 @@ def set_form_url(url):
         return False
 
 
+# ══════════════════════════════════════════════════════════════
+#  발송 큐 (로컬 워커가 폴링)
+# ══════════════════════════════════════════════════════════════
+
+def _queue_ws(sh):
+    return _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS)
+
+
+def enqueue_sms(phone, link):
+    """큐에 '대기' 행 추가 → 요청ID 반환"""
+    sh = get_sheet()
+    if sh is None:
+        return None
+    try:
+        ws = _queue_ws(sh)
+        req_id = f"{int(time.time() * 1000)}_{clean_phone(phone)[-4:]}"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row(
+            [req_id, now, clean_phone(phone), link, "대기", "", ""],
+            value_input_option="RAW",
+        )
+        return req_id
+    except Exception as e:
+        st.warning(f"큐 저장 실패: {e}")
+        return None
+
+
+def check_queue(req_id):
+    """요청ID의 현재 상태 조회 → (상태, 결과메시지)"""
+    sh = get_sheet()
+    if sh is None:
+        return ("오류", "시트 연결 실패")
+    try:
+        ws = _queue_ws(sh)
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if row and row[0] == req_id:
+                status = row[4] if len(row) > 4 else ""
+                result = row[6] if len(row) > 6 else ""
+                return (status, result)
+    except Exception as e:
+        return ("오류", str(e))
+    return ("미발견", "")
+
+
 def already_sent_today(phone):
+    """오늘 큐에 같은 번호로 '완료' 이력이 있는지"""
     sh = get_sheet()
     if sh is None:
         return False
     try:
-        ws = _ws(sh, LOG_SHEET_NAME, ["일시", "전화번호", "결과"])
+        ws = _queue_ws(sh)
         rows = ws.get_all_values()
         today = datetime.now().strftime("%Y-%m-%d")
         clean = clean_phone(phone)
         for row in rows[1:]:
-            if len(row) >= 3 and row[0].startswith(today) and clean_phone(row[1]) == clean and "성공" in row[2]:
+            if len(row) < 5:
+                continue
+            if row[1].startswith(today) and clean_phone(row[2]) == clean and row[4] == "완료":
                 return True
     except Exception:
         pass
     return False
-
-
-def log_send(phone, result_text):
-    sh = get_sheet()
-    if sh is None:
-        return
-    try:
-        ws = _ws(sh, LOG_SHEET_NAME, ["일시", "전화번호", "결과"])
-        ws.append_row(
-            [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), clean_phone(phone), result_text],
-            value_input_option="RAW",
-        )
-    except Exception as e:
-        st.warning(f"발송 기록 저장 실패: {e}")
-
-
-# ══════════════════════════════════════════════════════════════
-#  슈어엠 클라이언트
-# ══════════════════════════════════════════════════════════════
-
-@st.cache_resource
-def get_surem():
-    try:
-        return SuremClient(
-            user_code=st.secrets["surem_user_code"],
-            secret_key=st.secrets["surem_secret_key"],
-            reg_phone=st.secrets["surem_reg_phone"],
-        )
-    except Exception as e:
-        st.error(f"슈어엠 설정 오류: {e}")
-        return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -203,38 +223,34 @@ with st.sidebar:
             st.rerun()
 
         st.divider()
-        st.caption("🔍 슈어엠 연결 진단")
-        uc = st.secrets.get("surem_user_code", "")
-        sk = st.secrets.get("surem_secret_key", "")
-        rp = st.secrets.get("surem_reg_phone", "")
-        st.text(f"user_code: {uc[:4]}***{uc[-2:] if len(uc)>6 else ''}")
-        st.text(f"secret_key: {'설정됨' if sk else '❌ 비어있음'} (길이 {len(sk)})")
-        st.text(f"reg_phone: {rp}")
-        if st.button("🧪 슈어엠 인증 테스트"):
-            try:
-                from surem_client import SuremClient
-                c = SuremClient(uc, sk, rp)
-                c.auth()
-                st.success(f"인증 성공 · 토큰 앞 8자: {c._token[:8]}")
-            except Exception as e:
-                st.error(str(e))
-
-        st.divider()
-        st.caption("오늘 발송 이력")
+        st.caption("🔍 워커 상태")
         sh = get_sheet()
         if sh is not None:
             try:
-                ws = _ws(sh, LOG_SHEET_NAME, ["일시", "전화번호", "결과"])
+                ws = _queue_ws(sh)
                 rows = ws.get_all_values()
                 today = datetime.now().strftime("%Y-%m-%d")
-                todays = [r for r in rows[1:] if r and r[0].startswith(today)]
-                st.metric("오늘 발송 건수", len(todays))
+                todays = [r for r in rows[1:] if r and len(r) >= 5 and r[1].startswith(today)]
+                waiting = [r for r in todays if r[4] == "대기"]
+                done = [r for r in todays if r[4] == "완료"]
+                failed = [r for r in todays if r[4] == "실패"]
+                m1, m2, m3 = st.columns(3)
+                m1.metric("대기", len(waiting))
+                m2.metric("완료", len(done))
+                m3.metric("실패", len(failed))
+                if waiting:
+                    st.warning("⚠ 대기 건이 쌓여있습니다. 로컬 워커가 실행 중인지 확인하세요.")
                 if todays:
                     import pandas as pd
-                    df = pd.DataFrame(todays, columns=["일시", "전화번호", "결과"])
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-            except Exception:
-                pass
+                    df = pd.DataFrame(
+                        todays[-10:],
+                        columns=QUEUE_COLS[:len(todays[-1])] + [""] * (len(QUEUE_COLS) - len(todays[-1])),
+                    )
+                    st.caption("최근 10건")
+                    st.dataframe(df[["요청시각", "전화번호", "상태", "결과"]],
+                                 use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f"큐 조회 실패: {e}")
     elif pw_in:
         st.error("비밀번호가 틀렸습니다.")
 
@@ -300,7 +316,6 @@ else:
             st.session_state["status"] = "dup"
             st.session_state["status_msg"] = "이미 오늘 발송되었습니다"
             st.session_state["status_time"] = time.time()
-            log_send(clean, "중복차단")
             st.rerun()
         else:
             form_url = get_form_url()
@@ -310,28 +325,43 @@ else:
                 st.session_state["status_time"] = time.time()
                 st.rerun()
             else:
-                surem = get_surem()
-                if surem is None:
+                # 큐에 등록 → 로컬 워커가 발송
+                req_id = enqueue_sms(clean, form_url)
+                if not req_id:
                     st.session_state["status"] = "error"
-                    st.session_state["status_msg"] = "문자 서비스 연결 실패"
+                    st.session_state["status_msg"] = "발송 요청 저장 실패"
                     st.session_state["status_time"] = time.time()
                     st.rerun()
                 else:
-                    msg = DEFAULT_MSG_TEMPLATE.format(link=form_url)
-                    try:
-                        ok, data = surem.send(clean, msg, subject="토요상설공연 만족도조사")
-                        if ok:
-                            st.session_state["status"] = "success"
-                            st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
-                            log_send(clean, "성공")
-                        else:
-                            st.session_state["status"] = "error"
-                            st.session_state["status_msg"] = f"발송 실패 ({data.get('message','')})"
-                            log_send(clean, f"실패({data.get('code','')})")
-                    except Exception as e:
+                    # 폴링 (최대 POLL_TIMEOUT_SEC초)
+                    placeholder = st.empty()
+                    final_status = None
+                    final_result = ""
+                    for sec in range(POLL_TIMEOUT_SEC):
+                        placeholder.markdown(
+                            f"<div class='warn-box'>⏳ 문자 발송 처리 중...<br>"
+                            f"<span style='font-size:24px'>{sec + 1}초 / {POLL_TIMEOUT_SEC}초</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        status, result = check_queue(req_id)
+                        if status == "완료":
+                            final_status = "success"
+                            break
+                        if status == "실패":
+                            final_status = "error"
+                            final_result = result
+                            break
+                        time.sleep(1)
+                    placeholder.empty()
+                    if final_status == "success":
+                        st.session_state["status"] = "success"
+                        st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
+                    elif final_status == "error":
                         st.session_state["status"] = "error"
-                        st.session_state["status_msg"] = f"발송 중 오류: {e}"
-                        log_send(clean, f"오류")
+                        st.session_state["status_msg"] = f"발송 실패: {final_result}"
+                    else:
+                        st.session_state["status"] = "error"
+                        st.session_state["status_msg"] = "발송 지연 — 잠시 후 다시 시도해주세요"
                     st.session_state["status_time"] = time.time()
                     st.rerun()
 
