@@ -203,6 +203,23 @@ with st.sidebar:
             st.rerun()
 
         st.divider()
+        st.caption("🔍 슈어엠 연결 진단")
+        uc = st.secrets.get("surem_user_code", "")
+        sk = st.secrets.get("surem_secret_key", "")
+        rp = st.secrets.get("surem_reg_phone", "")
+        st.text(f"user_code: {uc[:4]}***{uc[-2:] if len(uc)>6 else ''}")
+        st.text(f"secret_key: {'설정됨' if sk else '❌ 비어있음'} (길이 {len(sk)})")
+        st.text(f"reg_phone: {rp}")
+        if st.button("🧪 슈어엠 인증 테스트"):
+            try:
+                from surem_client import SuremClient
+                c = SuremClient(uc, sk, rp)
+                c.auth()
+                st.success(f"인증 성공 · 토큰 앞 8자: {c._token[:8]}")
+            except Exception as e:
+                st.error(str(e))
+
+        st.divider()
         st.caption("오늘 발송 이력")
         sh = get_sheet()
         if sh is not None:
