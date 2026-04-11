@@ -290,22 +290,21 @@ elif status == "error":
     time.sleep(1)
     st.rerun()
 else:
-    # 네이티브 HTML 폼을 components.html(iframe)로 렌더링 → <input type="tel">
-    # 제출 시 JS로 부모창 URL에 ?phone=... 붙여 이동 → Streamlit 재실행
-    import streamlit.components.v1 as components
-    admin_param = "&admin=true" if IS_ADMIN else ""
-    components.html(
-        f"""
-        <html>
-        <head>
-        <style>
-            body {{
-                margin: 0;
-                padding: 0;
-                background: transparent;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            }}
-            input[type="tel"] {{
+    # 네이티브 HTML 폼 — st.html로 메인 DOM에 직접 삽입 (살균 없음)
+    # GET 제출 시 브라우저가 직접 URL에 ?phone=... 붙여 Streamlit 재실행
+    admin_hidden = '<input type="hidden" name="admin" value="true">' if IS_ADMIN else ""
+    st.html(f"""
+    <form method="get" action="" autocomplete="off" style="margin-top: 20px;">
+        {admin_hidden}
+        <input
+            type="tel"
+            name="phone"
+            inputmode="tel"
+            pattern="[0-9]{{10,11}}"
+            placeholder="01012345678"
+            required
+            autofocus
+            style="
                 width: 100%;
                 font-size: 36px;
                 text-align: center;
@@ -319,11 +318,11 @@ else:
                 box-sizing: border-box;
                 margin-bottom: 16px;
                 outline: none;
-            }}
-            input[type="tel"]:focus {{
-                border-color: #F5C542;
-            }}
-            button {{
+            "
+        />
+        <button
+            type="submit"
+            style="
                 width: 100%;
                 font-size: 40px;
                 height: 140px;
@@ -333,46 +332,10 @@ else:
                 border-radius: 16px;
                 border: none;
                 cursor: pointer;
-            }}
-            button:hover {{ background-color: #FFD75E; }}
-        </style>
-        </head>
-        <body>
-        <form id="smsForm" onsubmit="return submitPhone(event)" autocomplete="off">
-            <input
-                type="tel"
-                id="phoneInput"
-                name="phone"
-                inputmode="tel"
-                pattern="[0-9]{{10,11}}"
-                placeholder="01012345678"
-                required
-                autofocus
-            />
-            <button type="submit">📨 전송</button>
-        </form>
-        <script>
-            function submitPhone(e) {{
-                e.preventDefault();
-                const val = document.getElementById('phoneInput').value.replace(/[^0-9]/g, '');
-                if (val.length < 10) return false;
-                const parentUrl = new URL(window.parent.location.href);
-                parentUrl.searchParams.set('phone', val);
-                {"parentUrl.searchParams.set('admin', 'true');" if IS_ADMIN else ""}
-                window.parent.location.href = parentUrl.toString();
-                return false;
-            }}
-            // 자동 포커스 (iframe 내부)
-            setTimeout(() => {{
-                const inp = document.getElementById('phoneInput');
-                if (inp) inp.focus();
-            }}, 100);
-        </script>
-        </body>
-        </html>
-        """,
-        height=260,
-    )
+            "
+        >📨 전송</button>
+    </form>
+    """)
 
     # 쿼리파라미터로 제출된 phone 처리
     submitted_phone = st.query_params.get("phone", "")
