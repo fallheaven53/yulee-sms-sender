@@ -39,7 +39,8 @@ CONF_SHEET_NAME = "SMS_설정"
 
 QUEUE_COLS = ["요청ID", "요청시각", "전화번호", "링크", "상태", "완료시각", "결과"]
 
-POLL_TIMEOUT_SEC = 20  # 워커 응답 대기 최대시간
+POLL_INTERVAL_SEC = 3   # 웹앱 폴링 주기 (429 방지)
+POLL_TIMEOUT_SEC = 12   # 워커 응답 대기 최대시간 (4회 폴링)
 
 
 def clean_phone(phone):
@@ -368,16 +369,19 @@ else:
                     st.session_state["status_time"] = time.time()
                     st.rerun()
                 else:
-                    # 폴링 (최대 POLL_TIMEOUT_SEC초)
+                    # 폴링 (POLL_INTERVAL_SEC 간격, 최대 POLL_TIMEOUT_SEC초)
                     placeholder = st.empty()
                     final_status = None
                     final_result = ""
-                    for sec in range(POLL_TIMEOUT_SEC):
+                    elapsed = 0
+                    while elapsed < POLL_TIMEOUT_SEC:
                         placeholder.markdown(
                             f"<div class='warn-box'>⏳ 문자 발송 처리 중...<br>"
-                            f"<span style='font-size:24px'>{sec + 1}초 / {POLL_TIMEOUT_SEC}초</span></div>",
+                            f"<span style='font-size:24px'>{elapsed}초 / {POLL_TIMEOUT_SEC}초</span></div>",
                             unsafe_allow_html=True,
                         )
+                        time.sleep(POLL_INTERVAL_SEC)
+                        elapsed += POLL_INTERVAL_SEC
                         status, result = check_queue(req_id)
                         if status == "완료":
                             final_status = "success"
@@ -386,7 +390,6 @@ else:
                             final_status = "error"
                             final_result = result
                             break
-                        time.sleep(1)
                     placeholder.empty()
                     if final_status == "success":
                         st.session_state["status"] = "success"
