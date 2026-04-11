@@ -12,11 +12,25 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
+IS_ADMIN = st.query_params.get("admin", "") == "true"
+
 st.set_page_config(
     page_title="2026 토요상설공연 만족도 조사",
     page_icon="📱",
     layout="centered",
+    initial_sidebar_state="expanded" if IS_ADMIN else "collapsed",
 )
+
+if not IS_ADMIN:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="collapsedControl"] { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 QUEUE_SHEET_NAME = "SMS_발송큐"
@@ -141,26 +155,6 @@ def check_queue(req_id):
     return ("미발견", "")
 
 
-def already_sent_today(phone):
-    """오늘 큐에 같은 번호로 '완료' 이력이 있는지"""
-    sh = get_sheet()
-    if sh is None:
-        return False
-    try:
-        ws = _queue_ws(sh)
-        rows = ws.get_all_values()
-        today = datetime.now().strftime("%Y-%m-%d")
-        clean = clean_phone(phone)
-        for row in rows[1:]:
-            if len(row) < 5:
-                continue
-            if row[1].startswith(today) and clean_phone(row[2]) == clean and row[4] == "완료":
-                return True
-    except Exception:
-        pass
-    return False
-
-
 # ══════════════════════════════════════════════════════════════
 #  스타일 (태블릿 큰 UI)
 # ══════════════════════════════════════════════════════════════
@@ -205,54 +199,55 @@ div.stButton > button:hover { background-color: #FFD75E; }
 #  사이드바 — 관리자 페이지
 # ══════════════════════════════════════════════════════════════
 
-with st.sidebar:
-    st.header("🔧 관리자")
-    admin_pw = st.secrets.get("admin_password", "")
-    pw_in = st.text_input("비밀번호", type="password")
-    if admin_pw and pw_in == admin_pw:
-        st.success("관리자 인증")
-        cur_url = get_form_url()
-        new_url = st.text_input("네이버폼 링크", value=cur_url)
-        if st.button("링크 저장"):
-            if set_form_url(new_url):
-                st.success("저장 완료")
+if IS_ADMIN:
+    with st.sidebar:
+        st.header("🔧 관리자")
+        admin_pw = st.secrets.get("admin_password", "")
+        pw_in = st.text_input("비밀번호", type="password")
+        if admin_pw and pw_in == admin_pw:
+            st.success("관리자 인증")
+            cur_url = get_form_url()
+            new_url = st.text_input("네이버폼 링크", value=cur_url)
+            if st.button("링크 저장"):
+                if set_form_url(new_url):
+                    st.success("저장 완료")
+                    st.rerun()
+
+            if st.button("🔄 발송기록 캐시 초기화"):
+                get_sheet.clear()
                 st.rerun()
 
-        if st.button("🔄 발송기록 캐시 초기화"):
-            get_sheet.clear()
-            st.rerun()
-
-        st.divider()
-        st.caption("🔍 워커 상태")
-        sh = get_sheet()
-        if sh is not None:
-            try:
-                ws = _queue_ws(sh)
-                rows = ws.get_all_values()
-                today = datetime.now().strftime("%Y-%m-%d")
-                todays = [r for r in rows[1:] if r and len(r) >= 5 and r[1].startswith(today)]
-                waiting = [r for r in todays if r[4] == "대기"]
-                done = [r for r in todays if r[4] == "완료"]
-                failed = [r for r in todays if r[4] == "실패"]
-                m1, m2, m3 = st.columns(3)
-                m1.metric("대기", len(waiting))
-                m2.metric("완료", len(done))
-                m3.metric("실패", len(failed))
-                if waiting:
-                    st.warning("⚠ 대기 건이 쌓여있습니다. 로컬 워커가 실행 중인지 확인하세요.")
-                if todays:
-                    import pandas as pd
-                    df = pd.DataFrame(
-                        todays[-10:],
-                        columns=QUEUE_COLS[:len(todays[-1])] + [""] * (len(QUEUE_COLS) - len(todays[-1])),
-                    )
-                    st.caption("최근 10건")
-                    st.dataframe(df[["요청시각", "전화번호", "상태", "결과"]],
-                                 use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.error(f"큐 조회 실패: {e}")
-    elif pw_in:
-        st.error("비밀번호가 틀렸습니다.")
+            st.divider()
+            st.caption("🔍 워커 상태")
+            sh = get_sheet()
+            if sh is not None:
+                try:
+                    ws = _queue_ws(sh)
+                    rows = ws.get_all_values()
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    todays = [r for r in rows[1:] if r and len(r) >= 5 and r[1].startswith(today)]
+                    waiting = [r for r in todays if r[4] == "대기"]
+                    done = [r for r in todays if r[4] == "완료"]
+                    failed = [r for r in todays if r[4] == "실패"]
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("대기", len(waiting))
+                    m2.metric("완료", len(done))
+                    m3.metric("실패", len(failed))
+                    if waiting:
+                        st.warning("⚠ 대기 건이 쌓여있습니다. 로컬 워커가 실행 중인지 확인하세요.")
+                    if todays:
+                        import pandas as pd
+                        df = pd.DataFrame(
+                            todays[-10:],
+                            columns=QUEUE_COLS[:len(todays[-1])] + [""] * (len(QUEUE_COLS) - len(todays[-1])),
+                        )
+                        st.caption("최근 10건")
+                        st.dataframe(df[["요청시각", "전화번호", "상태", "결과"]],
+                                     use_container_width=True, hide_index=True)
+                except Exception as e:
+                    st.error(f"큐 조회 실패: {e}")
+        elif pw_in:
+            st.error("비밀번호가 틀렸습니다.")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -295,26 +290,68 @@ elif status == "error":
     time.sleep(1)
     st.rerun()
 else:
-    # 입력 폼
-    with st.form("sms_form", clear_on_submit=True):
-        phone = st.text_input(
-            "전화번호",
-            placeholder="01012345678",
-            key="phone_input",
-            label_visibility="collapsed",
-        )
-        submitted = st.form_submit_button("📨 전송")
+    # 네이티브 HTML 폼 — <input type="tel">로 렌더링 → 태블릿에서 숫자 키패드
+    # GET 방식으로 제출되면 ?phone=... 쿼리파라미터가 붙어 재실행됨
+    admin_hidden = '<input type="hidden" name="admin" value="true">' if IS_ADMIN else ""
+    st.markdown(
+        f"""
+        <form method="get" action="" autocomplete="off" style="margin-top: 20px;">
+            {admin_hidden}
+            <input
+                type="tel"
+                name="phone"
+                inputmode="tel"
+                pattern="[0-9]{{10,11}}"
+                placeholder="01012345678"
+                required
+                autofocus
+                style="
+                    width: 100%;
+                    font-size: 36px;
+                    text-align: center;
+                    height: 80px;
+                    letter-spacing: 3px;
+                    border-radius: 12px;
+                    border: 2px solid #555;
+                    background: #1e1e1e;
+                    color: #fff;
+                    padding: 0 16px;
+                    box-sizing: border-box;
+                    margin-bottom: 16px;
+                "
+            />
+            <button
+                type="submit"
+                style="
+                    width: 100%;
+                    font-size: 40px;
+                    height: 140px;
+                    background-color: #F5C542;
+                    color: #111;
+                    font-weight: 700;
+                    border-radius: 16px;
+                    border: none;
+                    cursor: pointer;
+                "
+            >📨 전송</button>
+        </form>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if submitted:
-        clean = clean_phone(phone)
+    # 쿼리파라미터로 제출된 phone 처리
+    submitted_phone = st.query_params.get("phone", "")
+    if submitted_phone:
+        # 처리 시작 전 쿼리파라미터 비우기 (중복 처리 방지)
+        try:
+            del st.query_params["phone"]
+        except KeyError:
+            pass
+
+        clean = clean_phone(submitted_phone)
         if len(clean) < 10 or not clean.startswith("01"):
             st.session_state["status"] = "error"
             st.session_state["status_msg"] = "올바른 휴대폰 번호를 입력해주세요"
-            st.session_state["status_time"] = time.time()
-            st.rerun()
-        elif already_sent_today(clean):
-            st.session_state["status"] = "dup"
-            st.session_state["status_msg"] = "이미 오늘 발송되었습니다"
             st.session_state["status_time"] = time.time()
             st.rerun()
         else:
