@@ -69,9 +69,12 @@ def surem_auth():
             "Content-Type": "application/json",
             "Accept": "application/json",
         }, timeout=10)
-        data = res.json()
     except Exception as e:
-        return None, f"인증 요청 실패: {e}"
+        return None, f"네트워크 오류: {e}"
+    try:
+        data = res.json()
+    except Exception:
+        return None, f"HTTP {res.status_code} 응답 파싱 실패: {(res.text or '')[:100]}"
     if data.get("code") == "A0000":
         return data["data"]["accessToken"], None
     return None, f"인증 실패: {data.get('code')} {data.get('message', '')}"
