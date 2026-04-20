@@ -361,47 +361,15 @@ else:
                 st.session_state["status_time"] = time.time()
                 st.rerun()
             else:
-                # 큐에 등록 → 로컬 워커가 발송
                 req_id = enqueue_sms(clean, form_url)
                 if not req_id:
                     st.session_state["status"] = "error"
                     st.session_state["status_msg"] = "발송 요청 저장 실패"
-                    st.session_state["status_time"] = time.time()
-                    st.rerun()
                 else:
-                    # 폴링 (POLL_INTERVAL_SEC 간격, 최대 POLL_TIMEOUT_SEC초)
-                    placeholder = st.empty()
-                    final_status = None
-                    final_result = ""
-                    elapsed = 0
-                    while elapsed < POLL_TIMEOUT_SEC:
-                        placeholder.markdown(
-                            f"<div class='warn-box'>⏳ 문자 발송 처리 중...<br>"
-                            f"<span style='font-size:24px'>{elapsed}초 / {POLL_TIMEOUT_SEC}초</span></div>",
-                            unsafe_allow_html=True,
-                        )
-                        time.sleep(POLL_INTERVAL_SEC)
-                        elapsed += POLL_INTERVAL_SEC
-                        status, result = check_queue(req_id)
-                        if status == "완료":
-                            final_status = "success"
-                            break
-                        if status == "실패":
-                            final_status = "error"
-                            final_result = result
-                            break
-                    placeholder.empty()
-                    if final_status == "success":
-                        st.session_state["status"] = "success"
-                        st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
-                    elif final_status == "error":
-                        st.session_state["status"] = "error"
-                        st.session_state["status_msg"] = f"발송 실패: {final_result}"
-                    else:
-                        st.session_state["status"] = "error"
-                        st.session_state["status_msg"] = "발송 지연 — 잠시 후 다시 시도해주세요"
-                    st.session_state["status_time"] = time.time()
-                    st.rerun()
+                    st.session_state["status"] = "success"
+                    st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
+                st.session_state["status_time"] = time.time()
+                st.rerun()
 
 st.markdown(
     "<div class='footer'>입력하신 번호는 만족도 조사 링크 발송에만 사용됩니다.<br>"
