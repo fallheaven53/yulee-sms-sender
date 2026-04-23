@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-율이공방 — 만족도 조사 문자 자동 발송 웹앱
-현장 태블릿(10인치)에서 번호 입력 → 즉시 문자 발송
+율이공방 — 만족도 조사 문자 발송 웹앱 (GCP Cloud Function 릴레이)
+현장 태블릿에서 번호 입력 → Cloud Function(고정IP) → 슈어엠 API → 즉시 발송
 """
 
 import re
 import time
 from datetime import datetime
 
+import requests
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
@@ -33,14 +34,12 @@ if not IS_ADMIN:
     )
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-QUEUE_SHEET_NAME = "SMS_발송큐"
 LOG_SHEET_NAME = "SMS_발송기록"
 CONF_SHEET_NAME = "SMS_설정"
+LOG_COLS = ["일시", "전화번호", "결과"]
 
-QUEUE_COLS = ["요청ID", "요청시각", "전화번호", "링크", "상태", "완료시각", "결과"]
-
-POLL_INTERVAL_SEC = 2   # 웹앱 폴링 주기
-POLL_TIMEOUT_SEC = 8    # 워커 응답 대기 최대시간
+RELAY_URL = "https://asia-northeast3-nice-abbey-473900-e6.cloudfunctions.net/sms-relay-surem"
+MSG_TEMPLATE = "[광주문화재단] 토요상설공연 만족도 조사에 참여해 주세요.\n{link}"
 
 
 def clean_phone(phone):
@@ -112,48 +111,59 @@ def set_form_url(url):
 
 
 # ══════════════════════════════════════════════════════════════
-#  발송 큐 (로컬 워커가 폴링)
+#  SMS 발송 (GCP Cloud Function 릴레이)
 # ══════════════════════════════════════════════════════════════
 
-def _queue_ws(sh):
-    return _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS)
-
-
-def enqueue_sms(phone, link):
-    """큐에 '대기' 행 추가 → 요청ID 반환"""
-    sh = get_sheet()
-    if sh is None:
-        return None
+def send_sms(phone, link):
+    relay_token = st.secrets.get("relay_auth_token", "")
+    text = MSG_TEMPLATE.format(link=link)
     try:
-        ws = _queue_ws(sh)
-        req_id = f"{int(time.time() * 1000)}_{clean_phone(phone)[-4:]}"
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ws.append_row(
-            [req_id, now, clean_phone(phone), link, "대기", "", ""],
-            value_input_option="RAW",
+        res = requests.post(
+            RELAY_URL,
+            json={
+                "auth_token": relay_token,
+                "to": clean_phone(phone),
+                "message": text,
+            },
+            timeout=15,
         )
-        return req_id
     except Exception as e:
-        st.warning(f"큐 저장 실패: {e}")
-        return None
+        return False, f"네트워크 오류: {e}"
+    data = res.json()
+    if data.get("success"):
+        return True, "성공"
+    return False, data.get("message", f"HTTP {res.status_code}")
 
 
-def check_queue(req_id):
-    """요청ID의 현재 상태 조회 → (상태, 결과메시지)"""
+def log_to_sheet(phone, result):
     sh = get_sheet()
     if sh is None:
-        return ("오류", "시트 연결 실패")
+        return
     try:
-        ws = _queue_ws(sh)
+        ws = _ws(sh, LOG_SHEET_NAME, LOG_COLS)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([now, phone, result], value_input_option="RAW")
+    except Exception:
+        pass
+
+
+def is_duplicate_today(phone):
+    sh = get_sheet()
+    if sh is None:
+        return False
+    try:
+        ws = _ws(sh, LOG_SHEET_NAME, LOG_COLS)
         rows = ws.get_all_values()
+        today = datetime.now().strftime("%Y-%m-%d")
         for row in rows[1:]:
-            if row and row[0] == req_id:
-                status = row[4] if len(row) > 4 else ""
-                result = row[6] if len(row) > 6 else ""
-                return (status, result)
-    except Exception as e:
-        return ("오류", str(e))
-    return ("미발견", "")
+            if (len(row) >= 3
+                    and row[0].startswith(today)
+                    and clean_phone(row[1]) == clean_phone(phone)
+                    and "성공" in row[2]):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -214,39 +224,31 @@ if IS_ADMIN:
                     st.success("저장 완료")
                     st.rerun()
 
-            if st.button("🔄 발송기록 캐시 초기화"):
+            if st.button("🔄 캐시 초기화"):
                 get_sheet.clear()
                 st.rerun()
 
             st.divider()
-            st.caption("🔍 워커 상태")
+            st.caption("📋 오늘 발송 현황")
             sh = get_sheet()
             if sh is not None:
                 try:
-                    ws = _queue_ws(sh)
+                    ws = _ws(sh, LOG_SHEET_NAME, LOG_COLS)
                     rows = ws.get_all_values()
                     today = datetime.now().strftime("%Y-%m-%d")
-                    todays = [r for r in rows[1:] if r and len(r) >= 5 and r[1].startswith(today)]
-                    waiting = [r for r in todays if r[4] == "대기"]
-                    done = [r for r in todays if r[4] == "완료"]
-                    failed = [r for r in todays if r[4] == "실패"]
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("대기", len(waiting))
-                    m2.metric("완료", len(done))
-                    m3.metric("실패", len(failed))
-                    if waiting:
-                        st.warning("⚠ 대기 건이 쌓여있습니다. 로컬 워커가 실행 중인지 확인하세요.")
+                    todays = [r for r in rows[1:] if r and len(r) >= 3 and r[0].startswith(today)]
+                    ok_cnt = len([r for r in todays if "성공" in r[2]])
+                    fail_cnt = len([r for r in todays if "성공" not in r[2]])
+                    m1, m2 = st.columns(2)
+                    m1.metric("성공", ok_cnt)
+                    m2.metric("실패", fail_cnt)
                     if todays:
                         import pandas as pd
-                        df = pd.DataFrame(
-                            todays[-10:],
-                            columns=QUEUE_COLS[:len(todays[-1])] + [""] * (len(QUEUE_COLS) - len(todays[-1])),
-                        )
+                        df = pd.DataFrame(todays[-10:], columns=LOG_COLS[:len(todays[-1])])
                         st.caption("최근 10건")
-                        st.dataframe(df[["요청시각", "전화번호", "상태", "결과"]],
-                                     use_container_width=True, hide_index=True)
+                        st.dataframe(df, use_container_width=True, hide_index=True)
                 except Exception as e:
-                    st.error(f"큐 조회 실패: {e}")
+                    st.error(f"기록 조회 실패: {e}")
         elif pw_in:
             st.error("비밀번호가 틀렸습니다.")
 
@@ -354,22 +356,29 @@ else:
             st.session_state["status_time"] = time.time()
             st.rerun()
         else:
-            form_url = get_form_url()
-            if not form_url:
-                st.session_state["status"] = "error"
-                st.session_state["status_msg"] = "네이버폼 링크가 설정되지 않았습니다"
+            if is_duplicate_today(clean):
+                st.session_state["status"] = "dup"
+                st.session_state["status_msg"] = "이미 발송된 번호입니다"
                 st.session_state["status_time"] = time.time()
                 st.rerun()
             else:
-                req_id = enqueue_sms(clean, form_url)
-                if not req_id:
+                form_url = get_form_url()
+                if not form_url:
                     st.session_state["status"] = "error"
-                    st.session_state["status_msg"] = "발송 요청 저장 실패"
+                    st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
+                    st.session_state["status_time"] = time.time()
+                    st.rerun()
                 else:
-                    st.session_state["status"] = "success"
-                    st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
-                st.session_state["status_time"] = time.time()
-                st.rerun()
+                    ok, result = send_sms(clean, form_url)
+                    log_to_sheet(clean, result)
+                    if ok:
+                        st.session_state["status"] = "success"
+                        st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
+                    else:
+                        st.session_state["status"] = "error"
+                        st.session_state["status_msg"] = f"발송 실패: {result}"
+                    st.session_state["status_time"] = time.time()
+                    st.rerun()
 
 st.markdown(
     "<div class='footer'>입력하신 번호는 만족도 조사 링크 발송에만 사용됩니다.<br>"
