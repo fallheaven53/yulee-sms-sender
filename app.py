@@ -51,6 +51,7 @@ MSG_TEMPLATE_FULL = (
     "[광주문화재단] 토요상설공연\n"
     "만족도 조사에 참여해 주세요.\n"
     "{form_url}\n"
+    "\n"
     "공연 다시보기\n"
     "{youtube_url}"
 )
@@ -353,9 +354,9 @@ if IS_ADMIN:
 #  메인 화면
 # ══════════════════════════════════════════════════════════════
 
-st.markdown("<h1>📋 2026 토요상설공연<br>만족도 조사</h1>", unsafe_allow_html=True)
+st.markdown("<h1>📋 2026 토요상설공연<br>관람 등록</h1>", unsafe_allow_html=True)
 st.markdown(
-    "<div class='subtitle'>전화번호를 입력하시면 설문 링크를<br>문자로 보내드립니다</div>",
+    "<div class='subtitle'>전화번호를 입력하시면 설문 링크와<br>유튜브 링크를 문자로 보내드립니다</div>",
     unsafe_allow_html=True,
 )
 
