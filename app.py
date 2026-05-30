@@ -39,7 +39,29 @@ CONF_SHEET_NAME = "SMS_설정"
 LOG_COLS = ["일시", "전화번호", "결과"]
 
 RELAY_URL = "https://asia-northeast3-nice-abbey-473900-e6.cloudfunctions.net/sms-relay-surem"
-MSG_TEMPLATE = "[광주문화재단] 토요상설공연 만족도 조사에 참여해 주세요.\n{link}"
+
+# 본문 템플릿 — 만족도 조사만(BASE) / 만족도 + 유튜브 다시보기(FULL)
+# 직전 단일 템플릿 원문(롤백 참조): "[광주문화재단] 토요상설공연 만족도 조사에 참여해 주세요.\n{link}"
+MSG_TEMPLATE_BASE = (
+    "[광주문화재단] 토요상설공연\n"
+    "만족도 조사에 참여해 주세요.\n"
+    "{form_url}"
+)
+MSG_TEMPLATE_FULL = (
+    "[광주문화재단] 토요상설공연\n"
+    "만족도 조사에 참여해 주세요.\n"
+    "{form_url}\n"
+    "공연 다시보기\n"
+    "{youtube_url}"
+)
+
+
+def build_message(form_url, youtube_url=None):
+    """발송 본문 조립. 유튜브 링크가 비어 있으면 BASE(만족도만)로 폴백."""
+    yu = (youtube_url or "").strip()
+    if yu:
+        return MSG_TEMPLATE_FULL.format(form_url=form_url, youtube_url=yu)
+    return MSG_TEMPLATE_BASE.format(form_url=form_url)
 
 
 def clean_phone(phone):
@@ -72,7 +94,8 @@ def _ws(sh, title, header):
 
 
 def get_form_url():
-    """설정 시트에서 네이버폼 링크 조회 (없으면 secrets 기본값)"""
+    """설정 시트에서 구글폼 링크 조회 (없으면 secrets 기본값).
+    내부 키 이름은 호환성 위해 naver_form_url을 그대로 사용하나, 저장되는 값은 실제 구글폼 URL이다."""
     default = st.secrets.get("naver_form_url", "")
     sh = get_sheet()
     if sh is None:
@@ -110,13 +133,56 @@ def set_form_url(url):
         return False
 
 
+YOUTUBE_KEY = "youtube_replay_url"
+
+
+def get_youtube_url():
+    """설정 시트에서 회차 유튜브 다시보기 링크 조회 (없으면 secrets 기본값 또는 빈 문자열)."""
+    default = st.secrets.get("youtube_replay_url_default", "")
+    sh = get_sheet()
+    if sh is None:
+        return default
+    try:
+        ws = _ws(sh, CONF_SHEET_NAME, ["키", "값"])
+        rows = ws.get_all_values()
+        for row in rows[1:]:
+            if len(row) >= 2 and row[0] == YOUTUBE_KEY:
+                return row[1]
+    except Exception:
+        pass
+    return default
+
+
+def set_youtube_url(url):
+    """유튜브 다시보기 링크 저장 (빈 문자열 저장 시 폴백 모드)."""
+    sh = get_sheet()
+    if sh is None:
+        return False
+    try:
+        ws = _ws(sh, CONF_SHEET_NAME, ["키", "값"])
+        rows = ws.get_all_values()
+        target = None
+        for i, row in enumerate(rows[1:], start=2):
+            if row and row[0] == YOUTUBE_KEY:
+                target = i
+                break
+        if target:
+            ws.update(f"B{target}", [[url]], value_input_option="RAW")
+        else:
+            ws.append_row([YOUTUBE_KEY, url], value_input_option="RAW")
+        return True
+    except Exception as e:
+        st.sidebar.error(f"유튜브 링크 저장 실패: {e}")
+        return False
+
+
 # ══════════════════════════════════════════════════════════════
 #  SMS 발송 (GCP Cloud Function 릴레이)
 # ══════════════════════════════════════════════════════════════
 
-def send_sms(phone, link):
+def send_sms(phone, form_url, youtube_url=None):
     relay_token = st.secrets.get("relay_auth_token", "")
-    text = MSG_TEMPLATE.format(link=link)
+    text = build_message(form_url, youtube_url)
     try:
         res = requests.post(
             RELAY_URL,
@@ -218,12 +284,42 @@ if IS_ADMIN:
         if admin_pw and pw_in == admin_pw:
             st.success("관리자 인증")
             cur_url = get_form_url()
-            new_url = st.text_input("네이버폼 링크", value=cur_url)
-            if st.button("링크 저장"):
+            new_url = st.text_input("구글폼 링크", value=cur_url, key="form_url_input")
+            if st.button("구글폼 링크 저장"):
                 if set_form_url(new_url):
                     st.success("저장 완료")
                     st.rerun()
 
+            st.divider()
+            st.caption("🎬 회차 유튜브 다시보기 링크")
+            cur_yt = get_youtube_url()
+            new_yt = st.text_input(
+                "유튜브 다시보기 링크",
+                value=cur_yt,
+                key="youtube_url_input",
+                placeholder="이 회차 유튜브 라이브 URL (비워두면 만족도 조사만 발송)",
+            )
+            yt_c1, yt_c2 = st.columns(2)
+            with yt_c1:
+                if st.button("유튜브 링크 저장"):
+                    if set_youtube_url(new_yt.strip()):
+                        st.success("저장 완료")
+                        st.rerun()
+            with yt_c2:
+                if st.button("유튜브 링크 비우기"):
+                    if set_youtube_url(""):
+                        st.success("비움 (폴백 모드)")
+                        st.rerun()
+
+            # 본문 미리보기 + EUC-KR 바이트 / SMS·LMS 분기 표시
+            preview = build_message(new_url, new_yt)
+            st.caption("실제 발송 본문 미리보기:")
+            st.code(preview, language="text")
+            byte_len = len(preview.encode("euc-kr", errors="replace"))
+            msg_type = "LMS" if byte_len > 90 else "SMS"
+            st.caption(f"본문 길이: {byte_len} 바이트 / 분기: {msg_type} (90바이트 초과 시 LMS)")
+
+            st.divider()
             if st.button("🔄 캐시 초기화"):
                 get_sheet.clear()
                 st.rerun()
@@ -363,13 +459,14 @@ else:
                 st.rerun()
             else:
                 form_url = get_form_url()
+                youtube_url = get_youtube_url()
                 if not form_url:
                     st.session_state["status"] = "error"
                     st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
                     st.session_state["status_time"] = time.time()
                     st.rerun()
                 else:
-                    ok, result = send_sms(clean, form_url)
+                    ok, result = send_sms(clean, form_url, youtube_url)
                     log_to_sheet(clean, result)
                     if ok:
                         st.session_state["status"] = "success"
