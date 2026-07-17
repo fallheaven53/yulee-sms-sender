@@ -390,52 +390,71 @@ elif status == "error":
     time.sleep(1)
     st.rerun()
 else:
-    # 네이티브 HTML 폼 — st.html로 메인 DOM에 직접 삽입 (살균 없음)
-    # GET 제출 시 브라우저가 직접 URL에 ?phone=... 붙여 Streamlit 재실행
-    admin_hidden = '<input type="hidden" name="admin" value="true">' if IS_ADMIN else ""
-    st.html(f"""
-    <form method="get" action="" autocomplete="off" style="margin-top: 20px;">
-        {admin_hidden}
-        <input
-            type="tel"
-            name="phone"
-            inputmode="tel"
-            pattern="[0-9]{{10,11}}"
-            placeholder="01012345678"
-            required
-            autofocus
-            style="
-                width: 100%;
-                font-size: 36px;
-                text-align: center;
-                height: 80px;
-                letter-spacing: 3px;
-                border-radius: 12px;
-                border: 2px solid #555;
-                background: #1e1e1e;
-                color: #fff;
-                padding: 0 16px;
-                box-sizing: border-box;
-                margin-bottom: 16px;
-                outline: none;
-            "
-        />
-        <button
-            type="submit"
-            style="
-                width: 100%;
-                font-size: 40px;
-                height: 140px;
-                background-color: #F5C542;
-                color: #111;
-                font-weight: 700;
-                border-radius: 16px;
-                border: none;
-                cursor: pointer;
-            "
-        >📨 전송</button>
-    </form>
-    """)
+    # #2026-112W 키오스크 키패드 — components.v1.html(JS 실행)로 타건 즉시 표시줄 갱신.
+    # 확인 시 top 프레임에 ?phone= 부여 → 기존 query_params 처리(검증·send_sms·log) 재사용.
+    # 저장·발송 로직 무변경. (top-nav 미허용 환경이면 self.location 폴백)
+    from streamlit.components.v1 import html as _kiosk_html
+    _admin_q = "&admin=true" if IS_ADMIN else ""
+    _kiosk_html("""
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;}
+  #kiosk{max-width:540px;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
+  #disp{font-size:46px;text-align:center;letter-spacing:3px;height:88px;line-height:88px;
+        border-radius:14px;border:2px solid #555;background:#1e1e1e;color:#fff;margin-bottom:6px;overflow:hidden;}
+  #disp.ph{color:#666;}
+  #hint{text-align:center;color:#E74C3C;font-size:20px;min-height:28px;margin-bottom:10px;}
+  #pad{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+  #pad button{font-size:34px;font-weight:700;height:94px;border-radius:14px;border:none;
+              background:#2b2b2b;color:#fff;cursor:pointer;}
+  #pad button:active{background:#404040;}
+  #pad .k010{background:#33475b;}
+  #pad .del{background:#5b3333;}
+  #confirm{width:100%;font-size:40px;font-weight:700;height:120px;margin-top:14px;
+           background:#F5C542;color:#111;border:none;border-radius:16px;cursor:pointer;}
+</style>
+<div id="kiosk">
+  <div id="disp" class="ph">010-0000-0000</div>
+  <div id="hint"></div>
+  <div id="pad">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <button data-k="010" class="k010">010</button>
+    <button data-k="0">0</button>
+    <button data-k="del" class="del">&#8592;</button>
+  </div>
+  <button id="confirm">확인</button>
+</div>
+<script>
+  var num="";
+  var disp=document.getElementById("disp");
+  var hint=document.getElementById("hint");
+  function fmt(n){
+    if(!n) return "010-0000-0000";
+    if(n.length<=3) return n;
+    if(n.length<=7) return n.slice(0,3)+"-"+n.slice(3);
+    return n.slice(0,3)+"-"+n.slice(3,7)+"-"+n.slice(7);
+  }
+  function render(){disp.textContent=fmt(num);disp.className=num?"":"ph";}
+  function press(k){
+    hint.textContent="";
+    if(k==="del"){num=num.slice(0,-1);}
+    else if(k==="010"){if(num.length===0)num="010";}
+    else{if(num.length<11)num+=k;}
+    render();
+  }
+  document.querySelectorAll("#pad button").forEach(function(b){
+    b.addEventListener("click",function(){press(b.getAttribute("data-k"));});
+  });
+  document.getElementById("confirm").addEventListener("click",function(){
+    if(!/^010[0-9]{7,8}$/.test(num)){hint.textContent="번호를 확인해 주세요";return;}
+    var url="?phone="+num+"__ADMIN_Q__";
+    try{window.top.location.href=url;}catch(e){window.location.href=url;}
+  });
+  render();
+</script>
+    """.replace("__ADMIN_Q__", _admin_q), height=660)
 
     # 쿼리파라미터로 제출된 phone 처리
     submitted_phone = st.query_params.get("phone", "")
