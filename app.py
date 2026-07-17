@@ -233,6 +233,34 @@ def is_duplicate_today(phone):
     return False
 
 
+def _process_registration(raw):
+    """#2026-112W 완성 번호 등록 처리(검증·중복·발송·기록). status만 세팅, rerun은 호출부.
+    구 form(?phone=)·키오스크 버튼 그리드 공용 진입점. send_sms·log_to_sheet 무변경."""
+    clean = clean_phone(raw)
+    if len(clean) < 10 or not clean.startswith("01"):
+        st.session_state["status"] = "error"
+        st.session_state["status_msg"] = "올바른 휴대폰 번호를 입력해주세요"
+    elif is_duplicate_today(clean):
+        st.session_state["status"] = "dup"
+        st.session_state["status_msg"] = "이미 발송된 번호입니다"
+    else:
+        form_url = get_form_url()
+        youtube_url = get_youtube_url()
+        if not form_url:
+            st.session_state["status"] = "error"
+            st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
+        else:
+            ok, result = send_sms(clean, form_url, youtube_url)
+            log_to_sheet(clean, result)
+            if ok:
+                st.session_state["status"] = "success"
+                st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
+            else:
+                st.session_state["status"] = "error"
+                st.session_state["status_msg"] = f"발송 실패: {result}"
+    st.session_state["status_time"] = time.time()
+
+
 # ══════════════════════════════════════════════════════════════
 #  스타일 (태블릿 큰 UI)
 # ══════════════════════════════════════════════════════════════
@@ -269,6 +297,17 @@ div.stButton > button:hover { background-color: #FFD75E; }
     background: #e65100; color: #fff; padding: 30px; border-radius: 16px;
     margin: 30px 0;
 }
+/* #2026-112W 키오스크 키패드 */
+.kiosk-disp { font-size: 46px; text-align: center; letter-spacing: 3px; height: 92px;
+              line-height: 92px; border-radius: 14px; border: 2px solid #555;
+              background: #1e1e1e; color: #fff; margin: 12px 0 6px; overflow: hidden; }
+.kiosk-disp.ph { color: #666; }
+.kiosk-hint { text-align: center; color: #E74C3C; font-size: 22px; min-height: 30px; margin-bottom: 6px; }
+div.stButton > button[kind="secondary"] { background: #2b2b2b !important; color: #fff !important;
+              height: 92px !important; font-size: 34px !important; }
+div.stButton > button[kind="secondary"]:hover { background: #404040 !important; }
+div.stButton > button[kind="primary"] { background: #F5C542 !important; color: #111 !important;
+              height: 110px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -390,93 +429,69 @@ elif status == "error":
     time.sleep(1)
     st.rerun()
 else:
-    # 네이티브 HTML 폼 — st.html로 메인 DOM에 직접 삽입 (살균 없음)
-    # GET 제출 시 브라우저가 직접 URL에 ?phone=... 붙여 Streamlit 재실행
-    admin_hidden = '<input type="hidden" name="admin" value="true">' if IS_ADMIN else ""
-    st.html(f"""
-    <form method="get" action="" autocomplete="off" style="margin-top: 20px;">
-        {admin_hidden}
-        <input
-            type="tel"
-            name="phone"
-            inputmode="tel"
-            pattern="[0-9]{{10,11}}"
-            placeholder="01012345678"
-            required
-            autofocus
-            style="
-                width: 100%;
-                font-size: 36px;
-                text-align: center;
-                height: 80px;
-                letter-spacing: 3px;
-                border-radius: 12px;
-                border: 2px solid #555;
-                background: #1e1e1e;
-                color: #fff;
-                padding: 0 16px;
-                box-sizing: border-box;
-                margin-bottom: 16px;
-                outline: none;
-            "
-        />
-        <button
-            type="submit"
-            style="
-                width: 100%;
-                font-size: 40px;
-                height: 140px;
-                background-color: #F5C542;
-                color: #111;
-                font-weight: 700;
-                border-radius: 16px;
-                border: none;
-                cursor: pointer;
-            "
-        >📨 전송</button>
-    </form>
-    """)
+    # #2026-112W 키오스크 버튼 그리드 (안 a) — 값 전달을 st.session_state로 처리한다.
+    # (components.v1.html top-nav는 iframe sandbox에 allow-top-navigation이 없어 차단됨.)
+    # 키 클릭은 on_click 콜백으로 번호를 갱신, 확인 시 _process_registration 호출. 저장·발송 무변경.
+    _KP = "kiosk_phone"
+    if _KP not in st.session_state:
+        st.session_state[_KP] = ""
+    if "kiosk_hint" not in st.session_state:
+        st.session_state["kiosk_hint"] = ""
 
-    # 쿼리파라미터로 제출된 phone 처리
-    submitted_phone = st.query_params.get("phone", "")
-    if submitted_phone:
-        # 처리 시작 전 쿼리파라미터 비우기 (중복 처리 방지)
+    def _kp_press(k):
+        p = st.session_state[_KP]
+        if k == "del":
+            st.session_state[_KP] = p[:-1]
+        elif k == "010":
+            if p == "":
+                st.session_state[_KP] = "010"
+        elif len(p) < 11:
+            st.session_state[_KP] = p + k
+        st.session_state["kiosk_hint"] = ""
+
+    def _kp_fmt(n):
+        if not n:
+            return "010-0000-0000"
+        if len(n) <= 3:
+            return n
+        if len(n) <= 7:
+            return n[:3] + "-" + n[3:]
+        return n[:3] + "-" + n[3:7] + "-" + n[7:]
+
+    _cur = st.session_state[_KP]
+    st.markdown(
+        f"<div class='kiosk-disp{' ph' if not _cur else ''}'>{_kp_fmt(_cur)}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div class='kiosk-hint'>{st.session_state['kiosk_hint']}</div>",
+        unsafe_allow_html=True,
+    )
+    for _row in (["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["010", "0", "del"]):
+        _cols = st.columns(3)
+        for _i, _k in enumerate(_row):
+            _label = {"del": "←", "010": "010"}.get(_k, _k)
+            _cols[_i].button(_label, key=f"kp_{_k}", type="secondary",
+                             use_container_width=True, on_click=_kp_press, args=(_k,))
+    if st.button("확인", key="kp_confirm", type="primary", use_container_width=True):
+        _p = st.session_state[_KP]
+        if len(_p) < 10 or not _p.startswith("010"):
+            st.session_state["kiosk_hint"] = "번호를 확인해 주세요"
+            st.rerun()
+        else:
+            st.session_state[_KP] = ""
+            _process_registration(_p)
+            st.rerun()
+
+    # (구 form 하위호환) 쿼리파라미터 phone 처리 — 공용 진입점 재사용
+    _q = st.query_params.get("phone", "")
+    if _q:
         try:
             del st.query_params["phone"]
         except KeyError:
             pass
-
-        clean = clean_phone(submitted_phone)
-        if len(clean) < 10 or not clean.startswith("01"):
-            st.session_state["status"] = "error"
-            st.session_state["status_msg"] = "올바른 휴대폰 번호를 입력해주세요"
-            st.session_state["status_time"] = time.time()
-            st.rerun()
-        else:
-            if is_duplicate_today(clean):
-                st.session_state["status"] = "dup"
-                st.session_state["status_msg"] = "이미 발송된 번호입니다"
-                st.session_state["status_time"] = time.time()
-                st.rerun()
-            else:
-                form_url = get_form_url()
-                youtube_url = get_youtube_url()
-                if not form_url:
-                    st.session_state["status"] = "error"
-                    st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
-                    st.session_state["status_time"] = time.time()
-                    st.rerun()
-                else:
-                    ok, result = send_sms(clean, form_url, youtube_url)
-                    log_to_sheet(clean, result)
-                    if ok:
-                        st.session_state["status"] = "success"
-                        st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
-                    else:
-                        st.session_state["status"] = "error"
-                        st.session_state["status_msg"] = f"발송 실패: {result}"
-                    st.session_state["status_time"] = time.time()
-                    st.rerun()
+        _process_registration(_q)
+        st.rerun()
 
 st.markdown(
     "<div class='footer'>입력하신 번호는 만족도 조사 링크 발송에만 사용됩니다.<br>"
