@@ -297,17 +297,26 @@ div.stButton > button:hover { background-color: #FFD75E; }
     background: #e65100; color: #fff; padding: 30px; border-radius: 16px;
     margin: 30px 0;
 }
-/* #2026-112W 키오스크 키패드 */
-.kiosk-disp { font-size: 46px; text-align: center; letter-spacing: 3px; height: 92px;
-              line-height: 92px; border-radius: 14px; border: 2px solid #555;
-              background: #1e1e1e; color: #fff; margin: 12px 0 6px; overflow: hidden; }
+/* #2026-112W 키오스크 키패드 / #2026-114W 실기 감성 조정(3건) */
+/* ② 상단 Fork·GitHub·⋮ 메뉴 숨김(관객용 키오스크) */
+[data-testid="stToolbar"], [data-testid="stHeader"], #MainMenu, header { display: none !important; visibility: hidden !important; }
+/* ③ 스크롤 없이 표시줄~확인 한 화면: 상단 여백 축소 */
+.block-container { padding-top: 1.2rem !important; padding-bottom: 0.5rem !important; }
+h1 { padding-top: 2px !important; margin-bottom: 4px !important; }
+.subtitle { margin-bottom: 12px !important; }
+/* ① 표시줄 숫자 세로 가운데 정렬(flex 중앙 — line-height baseline 처짐 해소) */
+.kiosk-disp { font-size: 44px; text-align: center; letter-spacing: 3px; height: 76px;
+              display: flex; align-items: center; justify-content: center;
+              border-radius: 14px; border: 2px solid #555;
+              background: #1e1e1e; color: #fff; margin: 8px 0 4px; overflow: hidden; }
 .kiosk-disp.ph { color: #666; }
-.kiosk-hint { text-align: center; color: #E74C3C; font-size: 22px; min-height: 30px; margin-bottom: 6px; }
+.kiosk-hint { text-align: center; color: #E74C3C; font-size: 20px; min-height: 26px; margin-bottom: 4px; }
+/* ③ 키패드·확인 높이 축소 */
 div.stButton > button[kind="secondary"] { background: #2b2b2b !important; color: #fff !important;
-              height: 92px !important; font-size: 34px !important; }
+              height: 64px !important; font-size: 32px !important; }
 div.stButton > button[kind="secondary"]:hover { background: #404040 !important; }
 div.stButton > button[kind="primary"] { background: #F5C542 !important; color: #111 !important;
-              height: 110px !important; }
+              height: 80px !important; font-size: 34px !important; }
 </style>
 """, unsafe_allow_html=True)
 
