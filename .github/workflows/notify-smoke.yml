@@ -1,0 +1,21 @@
+# #2026-110W push 연동 — 앱 레포용 dispatch workflow 템플릿.
+# 이 파일을 예산·정산·SMS 3앱 레포 각각의 .github/workflows/notify-smoke.yml 로 둔다.
+# main 브랜치 push 시 yulee-smoke-test 스모크를 repository_dispatch(app-push)로 트리거한다.
+# (스모크 쪽 smoke.yml은 app-push 트리거 시 Streamlit 재배포 소요 대비 sleep 180 후 실행)
+name: Notify smoke test on push
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger yulee-smoke-test (repository_dispatch)
+        run: |
+          curl -sSf -X POST \
+            -H "Authorization: Bearer ${{ secrets.SMOKE_DISPATCH_PAT }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/fallheaven53/yulee-smoke-test/dispatches \
+            -d '{"event_type":"app-push"}'
