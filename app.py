@@ -297,26 +297,32 @@ div.stButton > button:hover { background-color: #FFD75E; }
     background: #e65100; color: #fff; padding: 30px; border-radius: 16px;
     margin: 30px 0;
 }
-/* #2026-112W 키오스크 키패드 / #2026-114W 실기 감성 조정(3건) */
-/* ② 상단 Fork·GitHub·⋮ 메뉴 숨김(관객용 키오스크) */
+/* #2026-112W 키오스크 / #2026-114W 감성 / #2026-116W 반응형 대응 */
+/* ② 상단 Fork·GitHub·⋮ 메뉴 숨김(관객용) */
 [data-testid="stToolbar"], [data-testid="stHeader"], #MainMenu, header { display: none !important; visibility: hidden !important; }
-/* ③ 스크롤 없이 표시줄~확인 한 화면: 상단 여백 축소 */
-.block-container { padding-top: 1.2rem !important; padding-bottom: 0.5rem !important; }
-h1 { padding-top: 2px !important; margin-bottom: 4px !important; }
-.subtitle { margin-bottom: 12px !important; }
-/* ① 표시줄 숫자 세로 가운데 정렬(flex 중앙 — line-height baseline 처짐 해소) */
-.kiosk-disp { font-size: 44px; text-align: center; letter-spacing: 3px; height: 76px;
+/* 여백 축소 + #2026-116W 데스크톱 과대 방지(중앙 카드 최대폭) */
+.block-container { padding-top: 1.2rem !important; padding-bottom: 0.5rem !important;
+                   max-width: 700px !important; }
+h1 { padding-top: 2px !important; margin-bottom: 4px !important; font-size: clamp(26px, 7vw, 44px) !important; }
+.subtitle { margin-bottom: 12px !important; font-size: clamp(15px, 4vw, 26px) !important; }
+/* #2026-116W 좁은 폭에서 3열 유지(st.columns 세로 스택 방지 — 430px 스택 지점) */
+[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: clamp(6px, 1.5vw, 12px) !important; }
+[data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+/* ① 표시줄 세로 중앙 + #2026-116W 크기 뷰포트 비례(clamp) */
+.kiosk-disp { font-size: clamp(28px, 8vw, 46px); text-align: center; letter-spacing: 2px;
+              height: clamp(56px, 13vw, 88px);
               display: flex; align-items: center; justify-content: center;
               border-radius: 14px; border: 2px solid #555;
               background: #1e1e1e; color: #fff; margin: 8px 0 4px; overflow: hidden; }
 .kiosk-disp.ph { color: #666; }
-.kiosk-hint { text-align: center; color: #E74C3C; font-size: 20px; min-height: 26px; margin-bottom: 4px; }
-/* ③ 키패드·확인 높이 축소 */
+.kiosk-hint { text-align: center; color: #E74C3C; font-size: clamp(15px, 4vw, 22px); min-height: 26px; margin-bottom: 4px; }
+/* #2026-116W 키패드·확인 크기 비례(좁으면 알맞게·넓으면 시원하게·상한으로 과대 방지) */
 div.stButton > button[kind="secondary"] { background: #2b2b2b !important; color: #fff !important;
-              height: 64px !important; font-size: 32px !important; }
+              height: clamp(48px, 12vw, 88px) !important; font-size: clamp(20px, 5.5vw, 34px) !important;
+              padding: 0 !important; }
 div.stButton > button[kind="secondary"]:hover { background: #404040 !important; }
 div.stButton > button[kind="primary"] { background: #F5C542 !important; color: #111 !important;
-              height: 80px !important; font-size: 34px !important; }
+              height: clamp(56px, 14vw, 96px) !important; font-size: clamp(22px, 6vw, 36px) !important; }
 </style>
 """, unsafe_allow_html=True)
 
