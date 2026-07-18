@@ -303,7 +303,8 @@ div.stButton > button:hover { background-color: #FFD75E; }
 /* 여백 축소 + #2026-116W 데스크톱 과대 방지(중앙 카드 최대폭) */
 .block-container { padding-top: 1.2rem !important; padding-bottom: 0.5rem !important;
                    max-width: 700px !important; }
-h1 { padding-top: 2px !important; margin-bottom: 4px !important; font-size: clamp(26px, 7vw, 44px) !important; }
+h1 { padding-top: 2px !important; margin-bottom: 4px !important;
+     font-size: clamp(20px, 6vw, 44px) !important; white-space: nowrap !important; }
 .subtitle { margin-bottom: 12px !important; font-size: clamp(15px, 4vw, 26px) !important; }
 /* #2026-116W 좁은 폭에서 3열 유지(st.columns 세로 스택 방지 — 430px 스택 지점) */
 [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: clamp(6px, 1.5vw, 12px) !important; }
@@ -408,7 +409,7 @@ if IS_ADMIN:
 #  메인 화면
 # ══════════════════════════════════════════════════════════════
 
-st.markdown("<h1>📋 2026 토요상설공연<br>관람 등록</h1>", unsafe_allow_html=True)
+st.markdown("<h1>📋 토요상설공연 관람 등록</h1>", unsafe_allow_html=True)
 st.markdown(
     "<div class='subtitle'>전화번호를 입력하시면 설문 링크와<br>유튜브 링크를 문자로 보내드립니다</div>",
     unsafe_allow_html=True,
