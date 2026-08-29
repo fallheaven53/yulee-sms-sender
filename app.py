@@ -400,6 +400,59 @@ if IS_ADMIN:
                 get_sheet.clear()
                 st.rerun()
 
+            # ── #2026-165W 임시: 클라우드(Streamlit) IP에서 슈어엠 직접 발송 판정 ──
+            # 목적은 "고정 IP 없는 클라우드 데이터센터 IP에서 슈어엠 발송이 되는가" 하나.
+            # 판정 끝나면 이 블록은 제거한다.
+            st.divider()
+            st.caption("🧪 #2026-165W 클라우드 IP 슈어엠 직접 발송 테스트 (임시)")
+            t165_to = st.text_input("테스트 수신번호 (마스터 번호 1통만)", key="t165_to")
+            if st.button("클라우드에서 직접 1통 발송"):
+                _uc = st.secrets.get("surem_user_code", "")
+                _sk = st.secrets.get("surem_secret_key", "")
+                _rp = re.sub(r"[^0-9]", "", st.secrets.get("surem_reg_phone", ""))
+                _to = re.sub(r"[^0-9]", "", t165_to or "")
+                if not (_uc and _sk):
+                    st.error("surem_user_code / surem_secret_key 시크릿이 Streamlit Cloud에 없음 — 마스터 보고 필요")
+                elif len(_to) < 10:
+                    st.error("수신번호를 확인하세요")
+                else:
+                    try:
+                        _tr = requests.post(
+                            "https://rest.surem.com/api/v1/auth/token",
+                            json={"userCode": _uc, "secretKey": _sk},
+                            headers={"Content-Type": "application/json", "Accept": "application/json"},
+                            timeout=15,
+                        )
+                        _tj = _tr.json()
+                        st.write(f"토큰: HTTP {_tr.status_code} / code={_tj.get('code')} / msg={_tj.get('message')}")
+                        _tok = (_tj.get("data") or {}).get("accessToken")
+                        if not _tok:
+                            st.error("토큰 발급 실패 — 위 응답 코드 확인")
+                        else:
+                            _text = "율이공방 관람등록 클라우드 발송 테스트 (165W)"
+                            _blen = sum(2 if ord(c) > 127 else 1 for c in _text)
+                            _path = "/api/v1/send/mms" if _blen > 90 else "/api/v1/send/sms"
+                            _body = {"to": _to, "text": _text, "reqPhone": _rp}
+                            if _path.endswith("mms"):
+                                _body["subject"] = "발송테스트"
+                            _sr = requests.post(
+                                "https://rest.surem.com" + _path,
+                                json=_body,
+                                headers={
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json",
+                                    "Authorization": f"Bearer {_tok}",
+                                },
+                                timeout=15,
+                            )
+                            _sj = _sr.json()
+                            _ok = _sr.status_code == 200 and str(_sj.get("code")) == "A0000"
+                            st.write(f"발송: HTTP {_sr.status_code} / code={_sj.get('code')} / msg={_sj.get('message')}")
+                            st.write(f"판정: {'✅ 클라우드 IP 발송 성공 (200 + A0000)' if _ok else '❌ 실패/차단 — 응답 코드 원문 위 참조'}")
+                            st.json(_sj)
+                    except Exception as _e:
+                        st.error(f"예외: {type(_e).__name__}: {_e}")
+
             st.divider()
             st.caption("📋 오늘 발송 현황")
             sh = get_sheet()
