@@ -406,52 +406,67 @@ if IS_ADMIN:
             st.divider()
             st.caption("🧪 #2026-165W 클라우드 IP 슈어엠 직접 발송 테스트 (임시)")
             t165_to = st.text_input("테스트 수신번호 (마스터 번호 1통만)", key="t165_to")
-            if st.button("클라우드에서 직접 1통 발송"):
+            if st.button("클라우드에서 직접 1통 발송 / 진단"):
                 _uc = st.secrets.get("surem_user_code", "")
                 _sk = st.secrets.get("surem_secret_key", "")
                 _rp = re.sub(r"[^0-9]", "", st.secrets.get("surem_reg_phone", ""))
                 _to = re.sub(r"[^0-9]", "", t165_to or "")
+
+                def _probe(label, method, url, **kw):
+                    """요청을 보내고 status·본문앞부분·JSON여부를 화면에 남긴다(예외도 흡수)."""
+                    try:
+                        _r = requests.request(method, url, timeout=15, **kw)
+                    except Exception as _e:
+                        st.write(f"[{label}] 연결 예외: {type(_e).__name__}: {_e}")
+                        return None
+                    _body = (_r.text or "")[:400]
+                    st.write(f"[{label}] HTTP {_r.status_code} · {len(_r.content)}B · 본문앞: {_body!r}")
+                    try:
+                        return _r.status_code, _r.json()
+                    except ValueError:
+                        st.write(f"[{label}] → JSON 아님")
+                        return _r.status_code, None
+
+                # 0) 이 요청이 나가는 클라우드 IP
+                _probe("egress-ip", "GET", "https://api.ipify.org?format=json")
+                # 1) 슈어엠 호스트 자체 도달 여부
+                _probe("surem-root", "GET", "https://rest.surem.com")
+
                 if not (_uc and _sk):
                     st.error("surem_user_code / surem_secret_key 시크릿이 Streamlit Cloud에 없음 — 마스터 보고 필요")
                 elif len(_to) < 10:
                     st.error("수신번호를 확인하세요")
                 else:
-                    try:
-                        _tr = requests.post(
-                            "https://rest.surem.com/api/v1/auth/token",
-                            json={"userCode": _uc, "secretKey": _sk},
-                            headers={"Content-Type": "application/json", "Accept": "application/json"},
-                            timeout=15,
+                    # 2) 토큰
+                    _tres = _probe(
+                        "token", "POST", "https://rest.surem.com/api/v1/auth/token",
+                        json={"userCode": _uc, "secretKey": _sk},
+                        headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    )
+                    _tok = None
+                    if _tres and _tres[1]:
+                        _tok = (_tres[1].get("data") or {}).get("accessToken")
+                    if not _tok:
+                        st.error("❌ 토큰 발급 실패 — 위 [token] 줄이 판정 근거. 클라우드 IP에서 슈어엠 미도달일 가능성.")
+                    else:
+                        # 3) 실제 발송 1통
+                        _text = "율이공방 관람등록 클라우드 발송 테스트 (165W)"
+                        _blen = sum(2 if ord(c) > 127 else 1 for c in _text)
+                        _path = "/api/v1/send/mms" if _blen > 90 else "/api/v1/send/sms"
+                        _body = {"to": _to, "text": _text, "reqPhone": _rp}
+                        if _path.endswith("mms"):
+                            _body["subject"] = "발송테스트"
+                        _sres = _probe(
+                            "send", "POST", "https://rest.surem.com" + _path,
+                            json=_body,
+                            headers={
+                                "Content-Type": "application/json",
+                                "Accept": "application/json",
+                                "Authorization": f"Bearer {_tok}",
+                            },
                         )
-                        _tj = _tr.json()
-                        st.write(f"토큰: HTTP {_tr.status_code} / code={_tj.get('code')} / msg={_tj.get('message')}")
-                        _tok = (_tj.get("data") or {}).get("accessToken")
-                        if not _tok:
-                            st.error("토큰 발급 실패 — 위 응답 코드 확인")
-                        else:
-                            _text = "율이공방 관람등록 클라우드 발송 테스트 (165W)"
-                            _blen = sum(2 if ord(c) > 127 else 1 for c in _text)
-                            _path = "/api/v1/send/mms" if _blen > 90 else "/api/v1/send/sms"
-                            _body = {"to": _to, "text": _text, "reqPhone": _rp}
-                            if _path.endswith("mms"):
-                                _body["subject"] = "발송테스트"
-                            _sr = requests.post(
-                                "https://rest.surem.com" + _path,
-                                json=_body,
-                                headers={
-                                    "Content-Type": "application/json",
-                                    "Accept": "application/json",
-                                    "Authorization": f"Bearer {_tok}",
-                                },
-                                timeout=15,
-                            )
-                            _sj = _sr.json()
-                            _ok = _sr.status_code == 200 and str(_sj.get("code")) == "A0000"
-                            st.write(f"발송: HTTP {_sr.status_code} / code={_sj.get('code')} / msg={_sj.get('message')}")
-                            st.write(f"판정: {'✅ 클라우드 IP 발송 성공 (200 + A0000)' if _ok else '❌ 실패/차단 — 응답 코드 원문 위 참조'}")
-                            st.json(_sj)
-                    except Exception as _e:
-                        st.error(f"예외: {type(_e).__name__}: {_e}")
+                        _ok = bool(_sres and _sres[0] == 200 and _sres[1] and str(_sres[1].get("code")) == "A0000")
+                        st.write(f"판정: {'✅ 클라우드 IP 발송 성공 (200 + A0000)' if _ok else '❌ 실패/차단 — 위 [send] 줄 참조'}")
 
             st.divider()
             st.caption("📋 오늘 발송 현황")
