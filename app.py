@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-율이공방 — 만족도 조사 문자 발송 웹앱 (GCP Cloud Function 릴레이)
-현장 태블릿에서 번호 입력 → Cloud Function(고정IP) → 슈어엠 API → 즉시 발송
+율이공방 — 만족도 조사 문자 발송 웹앱
+#2026-164W 경로 B: 현장 태블릿에서 번호 입력 → SMS_발송큐 시트 '대기' 행 기록
+→ 사무실 PC 로컬 워커(sms_worker.py)가 폴링 → 슈어엠 API 발송.
+(구 방식: Cloud Function 릴레이 호출. 7월 결제 축소로 릴레이 철수.)
 """
 
 import re
@@ -38,6 +40,11 @@ LOG_SHEET_NAME = "SMS_발송기록"
 CONF_SHEET_NAME = "SMS_설정"
 LOG_COLS = ["일시", "전화번호", "결과"]
 
+QUEUE_SHEET_NAME = "SMS_발송큐"
+QUEUE_COLS = ["요청ID", "요청시각", "전화번호", "링크", "상태", "완료시각", "결과"]
+
+# #2026-164W 경로 B: 릴레이 CF 철수. 발송은 SMS_발송큐 시트 → 사무실 PC 로컬 워커.
+# 아래 URL은 미사용(경로 A 릴레이 복귀 시 참조용으로만 남김).
 RELAY_URL = "https://asia-northeast3-nice-abbey-473900-e6.cloudfunctions.net/sms-relay-surem"
 
 # 본문 템플릿 — 만족도 조사만(BASE) / 만족도 + 유튜브 다시보기(FULL)
@@ -178,36 +185,38 @@ def set_youtube_url(url):
 
 
 # ══════════════════════════════════════════════════════════════
-#  SMS 발송 (GCP Cloud Function 릴레이)
+#  SMS 발송 (#2026-164W 경로 B — SMS_발송큐 시트 + 사무실 PC 로컬 워커)
 # ══════════════════════════════════════════════════════════════
 
-def send_sms(phone, form_url, youtube_url=None):
-    relay_token = st.secrets.get("relay_auth_token", "")
-    text = build_message(form_url, youtube_url)
+def enqueue_sms(phone, payload):
+    """SMS_발송큐 시트에 '대기' 행 추가 → 요청ID 반환(실패 시 None).
+    payload = 실제 발송 본문 전체(워커가 verbatim 발송). '링크' 열에 저장."""
+    sh = get_sheet()
+    if sh is None:
+        return None
     try:
-        res = requests.post(
-            RELAY_URL,
-            json={
-                "auth_token": relay_token,
-                "to": clean_phone(phone),
-                "message": text,
-            },
-            timeout=15,
+        ws = _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS)
+        req_id = f"{int(time.time() * 1000)}_{clean_phone(phone)[-4:]}"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row(
+            [req_id, now, clean_phone(phone), payload, "대기", "", ""],
+            value_input_option="RAW",
         )
+        return req_id
     except Exception as e:
-        return False, f"네트워크 오류: {e}"
-    # #2026-163W 방어 패치: 릴레이가 죽어(sms-relay-surem 철수) 404 HTML을 돌려주면
-    # res.json()이 JSONDecodeError(ValueError 계열)를 던져 앱 전체가 크래시했다.
-    # 응답이 200이 아니거나 JSON이 아니면 예외를 삼키지 말고 정상 실패 경로로 반환한다.
-    if res.status_code != 200:
-        return False, f"문자 자동발송이 일시 중단되었습니다. 현장 안내 바람 (HTTP {res.status_code})"
-    try:
-        data = res.json()
-    except ValueError:
-        return False, "문자 자동발송이 일시 중단되었습니다. 현장 안내 바람"
-    if data.get("success"):
-        return True, "성공"
-    return False, data.get("message", f"HTTP {res.status_code}")
+        st.warning(f"큐 저장 실패: {e}")
+        return None
+
+
+def send_sms(phone, form_url, youtube_url=None):
+    """#2026-164W: 릴레이 CF 호출 대신 SMS_발송큐 시트에 발송 요청을 기록한다.
+    사무실 PC의 sms_worker.py가 폴링해 슈어엠 API로 실제 발송한다.
+    반환 시그니처(ok, msg)는 릴레이 방식과 동일하게 유지."""
+    text = build_message(form_url, youtube_url)
+    req_id = enqueue_sms(phone, text)
+    if not req_id:
+        return False, "발송 요청 저장 실패 (시트 큐)"
+    return True, "발송 요청 접수"
 
 
 def log_to_sheet(phone, result):
@@ -243,7 +252,9 @@ def is_duplicate_today(phone):
 
 def _process_registration(raw):
     """#2026-112W 완성 번호 등록 처리(검증·중복·발송·기록). status만 세팅, rerun은 호출부.
-    구 form(?phone=)·키오스크 버튼 그리드 공용 진입점. send_sms·log_to_sheet 무변경."""
+    구 form(?phone=)·키오스크 버튼 그리드 공용 진입점.
+    #2026-164W: send_sms는 큐 기록만 하고 실제 발송·발송기록은 워커가 담당.
+    큐 등록 실패 시에만 여기서 log_to_sheet로 남긴다."""
     clean = clean_phone(raw)
     if len(clean) < 10 or not clean.startswith("01"):
         st.session_state["status"] = "error"
@@ -259,7 +270,8 @@ def _process_registration(raw):
             st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
         else:
             ok, result = send_sms(clean, form_url, youtube_url)
-            log_to_sheet(clean, result)
+            if not ok:
+                log_to_sheet(clean, result)
             if ok:
                 st.session_state["status"] = "success"
                 st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
