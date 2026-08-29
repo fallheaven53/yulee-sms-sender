@@ -196,7 +196,15 @@ def send_sms(phone, form_url, youtube_url=None):
         )
     except Exception as e:
         return False, f"네트워크 오류: {e}"
-    data = res.json()
+    # #2026-163W 방어 패치: 릴레이가 죽어(sms-relay-surem 철수) 404 HTML을 돌려주면
+    # res.json()이 JSONDecodeError(ValueError 계열)를 던져 앱 전체가 크래시했다.
+    # 응답이 200이 아니거나 JSON이 아니면 예외를 삼키지 말고 정상 실패 경로로 반환한다.
+    if res.status_code != 200:
+        return False, f"문자 자동발송이 일시 중단되었습니다. 현장 안내 바람 (HTTP {res.status_code})"
+    try:
+        data = res.json()
+    except ValueError:
+        return False, "문자 자동발송이 일시 중단되었습니다. 현장 안내 바람"
     if data.get("success"):
         return True, "성공"
     return False, data.get("message", f"HTTP {res.status_code}")
