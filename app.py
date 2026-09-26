@@ -92,13 +92,47 @@ def get_sheet():
     return gc.open_by_key(sheet_id)
 
 
+@st.cache_resource
+def _ws_handles():
+    """#2026-217W — 워크시트 핸들 캐시. sh.worksheet()는 매번 시트 메타데이터를 읽어
+    분당 읽기 한도(워커와 같은 서비스 계정 공유)를 소모하므로 제목별로 한 번만 연다."""
+    return {}
+
+
 def _ws(sh, title, header):
+    cache = _ws_handles()
+    ws = cache.get(title)
+    if ws is not None:
+        return ws
     try:
-        return sh.worksheet(title)
+        ws = sh.worksheet(title)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title, rows=1000, cols=max(5, len(header)))
         ws.update([header], value_input_option="RAW")
-        return ws
+    cache[title] = ws
+    return ws
+
+
+def _is_quota_error(e):
+    return isinstance(e, gspread.exceptions.APIError) and "429" in str(e)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _conf_rows():
+    """#2026-217W — 설정 시트 읽기 캐시(60초). 실패는 캐시하지 않고 예외로 올린다."""
+    sh = get_sheet()
+    if sh is None:
+        return []
+    return _ws(sh, CONF_SHEET_NAME, ["키", "값"]).get_all_values()
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _log_rows_for_status():
+    """#2026-217W — 관리자 «오늘 발송 현황» 표시용 읽기 캐시(30초). 중복 확인에는 쓰지 않는다."""
+    sh = get_sheet()
+    if sh is None:
+        return []
+    return _ws(sh, LOG_SHEET_NAME, LOG_COLS).get_all_values()
 
 
 def get_form_url():
@@ -109,8 +143,7 @@ def get_form_url():
     if sh is None:
         return default
     try:
-        ws = _ws(sh, CONF_SHEET_NAME, ["키", "값"])
-        rows = ws.get_all_values()
+        rows = _conf_rows()
         for row in rows[1:]:
             if len(row) >= 2 and row[0] == "naver_form_url" and row[1]:
                 return row[1]
@@ -135,6 +168,7 @@ def set_form_url(url):
             ws.update(f"B{target}", [[url]], value_input_option="RAW")
         else:
             ws.append_row(["naver_form_url", url], value_input_option="RAW")
+        _conf_rows.clear()
         return True
     except Exception as e:
         st.sidebar.error(f"설정 저장 실패: {e}")
@@ -151,8 +185,7 @@ def get_youtube_url():
     if sh is None:
         return default
     try:
-        ws = _ws(sh, CONF_SHEET_NAME, ["키", "값"])
-        rows = ws.get_all_values()
+        rows = _conf_rows()
         for row in rows[1:]:
             if len(row) >= 2 and row[0] == YOUTUBE_KEY:
                 return row[1]
@@ -178,6 +211,7 @@ def set_youtube_url(url):
             ws.update(f"B{target}", [[url]], value_input_option="RAW")
         else:
             ws.append_row([YOUTUBE_KEY, url], value_input_option="RAW")
+        _conf_rows.clear()
         return True
     except Exception as e:
         st.sidebar.error(f"유튜브 링크 저장 실패: {e}")
@@ -195,14 +229,22 @@ def enqueue_sms(phone, payload):
     if sh is None:
         return None
     try:
-        ws = _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS)
         req_id = f"{int(time.time() * 1000)}_{clean_phone(phone)[-4:]}"
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ws.append_row(
-            [req_id, now, clean_phone(phone), payload, "대기", "", ""],
-            value_input_option="RAW",
-        )
-        return req_id
+        # #2026-217W — 한도 초과(429)면 짧게 기다렸다 다시(총 3회). 그 밖의 오류는 즉시 실패.
+        for attempt in range(3):
+            try:
+                ws = _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS)
+                ws.append_row(
+                    [req_id, now, clean_phone(phone), payload, "대기", "", ""],
+                    value_input_option="RAW",
+                )
+                return req_id
+            except Exception as e:
+                if attempt < 2 and _is_quota_error(e):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                raise
     except Exception as e:
         st.warning(f"큐 저장 실패: {e}")
         return None
@@ -398,6 +440,9 @@ if IS_ADMIN:
             st.divider()
             if st.button("🔄 캐시 초기화"):
                 get_sheet.clear()
+                _ws_handles.clear()
+                _conf_rows.clear()
+                _log_rows_for_status.clear()
                 st.rerun()
 
             st.divider()
@@ -405,8 +450,7 @@ if IS_ADMIN:
             sh = get_sheet()
             if sh is not None:
                 try:
-                    ws = _ws(sh, LOG_SHEET_NAME, LOG_COLS)
-                    rows = ws.get_all_values()
+                    rows = _log_rows_for_status()
                     today = datetime.now().strftime("%Y-%m-%d")
                     todays = [r for r in rows[1:] if r and len(r) >= 3 and r[0].startswith(today)]
                     ok_cnt = len([r for r in todays if "성공" in r[2]])
