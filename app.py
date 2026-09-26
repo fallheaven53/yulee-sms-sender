@@ -117,6 +117,23 @@ def _is_quota_error(e):
     return isinstance(e, gspread.exceptions.APIError) and "429" in str(e)
 
 
+class SheetBusy(Exception):
+    """#2026-219W — 한도 초과 등으로 재시도 후에도 시트를 읽지 못함. 등록을 멈추고 «잠시 후 다시» 안내."""
+
+
+def _read_with_retry(fn):
+    """#2026-219W — 429면 2·4초 쉬고 다시(총 3회, enqueue_sms와 같은 간격). 끝내 실패하면 SheetBusy.
+    get_sheet()의 open_by_key도 읽기라 fn 안에서 부르게 한다(cache_resource는 실패를 캐시하지 않음)."""
+    for attempt in range(3):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < 2 and _is_quota_error(e):
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise SheetBusy(str(e)) from e
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _conf_rows():
     """#2026-217W — 설정 시트 읽기 캐시(60초). 실패는 캐시하지 않고 예외로 올린다."""
@@ -124,6 +141,41 @@ def _conf_rows():
     if sh is None:
         return []
     return _ws(sh, CONF_SHEET_NAME, ["키", "값"]).get_all_values()
+
+
+@st.cache_resource
+def _conf_last_good():
+    """#2026-219W — 마지막으로 읽은 설정 행(프로세스 공용). 캐시 만료 순간 429가 나도
+    secrets 기본 링크로 나가지 않고 직전 시트 값을 쓴다."""
+    return {}
+
+
+def _conf_rows_safe():
+    """#2026-219W — 설정 행: 캐시 → 재시도 → 직전 값. 셋 다 없으면 SheetBusy."""
+    last = _conf_last_good()
+    try:
+        rows = _read_with_retry(_conf_rows)
+    except SheetBusy:
+        if "rows" in last:
+            return last["rows"]
+        raise
+    last["rows"] = rows
+    return rows
+
+
+def _conf_value(key, default):
+    """설정 시트 값 조회. 키가 없으면 default, 시트를 못 읽으면 SheetBusy(기본값으로 조용히 대체하지 않음)."""
+    if get_sheet_safe() is None:
+        return default
+    for row in _conf_rows_safe()[1:]:
+        if len(row) >= 2 and row[0] == key:
+            return row[1]
+    return default
+
+
+def get_sheet_safe():
+    """get_sheet()를 429 재시도로 감싼 것. 실패하면 SheetBusy."""
+    return _read_with_retry(get_sheet)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -137,19 +189,10 @@ def _log_rows_for_status():
 
 def get_form_url():
     """설정 시트에서 구글폼 링크 조회 (없으면 secrets 기본값).
-    내부 키 이름은 호환성 위해 naver_form_url을 그대로 사용하나, 저장되는 값은 실제 구글폼 URL이다."""
+    내부 키 이름은 호환성 위해 naver_form_url을 그대로 사용하나, 저장되는 값은 실제 구글폼 URL이다.
+    #2026-219W: 시트를 못 읽으면 기본값으로 대체하지 않고 SheetBusy를 올린다."""
     default = st.secrets.get("naver_form_url", "")
-    sh = get_sheet()
-    if sh is None:
-        return default
-    try:
-        rows = _conf_rows()
-        for row in rows[1:]:
-            if len(row) >= 2 and row[0] == "naver_form_url" and row[1]:
-                return row[1]
-    except Exception:
-        pass
-    return default
+    return _conf_value("naver_form_url", "") or default
 
 
 def set_form_url(url):
@@ -179,19 +222,10 @@ YOUTUBE_KEY = "youtube_replay_url"
 
 
 def get_youtube_url():
-    """설정 시트에서 회차 유튜브 다시보기 링크 조회 (없으면 secrets 기본값 또는 빈 문자열)."""
+    """설정 시트에서 회차 유튜브 다시보기 링크 조회 (없으면 secrets 기본값 또는 빈 문자열).
+    #2026-219W: 시트를 못 읽으면 기본값으로 대체하지 않고 SheetBusy를 올린다."""
     default = st.secrets.get("youtube_replay_url_default", "")
-    sh = get_sheet()
-    if sh is None:
-        return default
-    try:
-        rows = _conf_rows()
-        for row in rows[1:]:
-            if len(row) >= 2 and row[0] == YOUTUBE_KEY:
-                return row[1]
-    except Exception:
-        pass
-    return default
+    return _conf_value(YOUTUBE_KEY, default)
 
 
 def set_youtube_url(url):
@@ -274,21 +308,19 @@ def log_to_sheet(phone, result):
 
 
 def is_duplicate_today(phone):
-    sh = get_sheet()
+    """#2026-219W: 429 등으로 발송기록을 못 읽으면 «중복 아님»으로 통과시키지 않고 SheetBusy를 올린다.
+    (예전엔 except: pass로 False를 돌려 같은 번호가 두 번 발송될 수 있었다 — 218W 2절 ①)"""
+    sh = get_sheet_safe()
     if sh is None:
         return False
-    try:
-        ws = _ws(sh, LOG_SHEET_NAME, LOG_COLS)
-        rows = ws.get_all_values()
-        today = datetime.now().strftime("%Y-%m-%d")
-        for row in rows[1:]:
-            if (len(row) >= 3
-                    and row[0].startswith(today)
-                    and clean_phone(row[1]) == clean_phone(phone)
-                    and "성공" in row[2]):
-                return True
-    except Exception:
-        pass
+    rows = _read_with_retry(lambda: _ws(sh, LOG_SHEET_NAME, LOG_COLS).get_all_values())
+    today = datetime.now().strftime("%Y-%m-%d")
+    for row in rows[1:]:
+        if (len(row) >= 3
+                and row[0].startswith(today)
+                and clean_phone(row[1]) == clean_phone(phone)
+                and "성공" in row[2]):
+            return True
     return False
 
 
@@ -301,12 +333,25 @@ def _process_registration(raw):
     if len(clean) < 10 or not clean.startswith("01"):
         st.session_state["status"] = "error"
         st.session_state["status_msg"] = "올바른 휴대폰 번호를 입력해주세요"
-    elif is_duplicate_today(clean):
+        st.session_state["status_time"] = time.time()
+        return
+    # #2026-219W: 중복 확인·설정 조회를 시트 한도 때문에 못 하면 큐에 넣지 않고 다시 누르게 한다.
+    # 입력한 번호는 키패드에 되살려 두어 «확인»만 다시 누르면 된다.
+    try:
+        is_dup = is_duplicate_today(clean)
+        if not is_dup:
+            form_url = get_form_url()
+            youtube_url = get_youtube_url()
+    except SheetBusy:
+        st.session_state["status"] = "retry"
+        st.session_state["status_msg"] = "잠시 후 다시 시도해 주세요"
+        st.session_state["kiosk_phone"] = clean
+        st.session_state["status_time"] = time.time()
+        return
+    if is_dup:
         st.session_state["status"] = "dup"
         st.session_state["status_msg"] = "이미 발송된 번호입니다"
     else:
-        form_url = get_form_url()
-        youtube_url = get_youtube_url()
         if not form_url:
             st.session_state["status"] = "error"
             st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
@@ -401,16 +446,22 @@ if IS_ADMIN:
         pw_in = st.text_input("비밀번호", type="password")
         if admin_pw and pw_in == admin_pw:
             st.success("관리자 인증")
-            cur_url = get_form_url()
+            # #2026-219W: 시트를 못 읽으면 입력칸에 기본 링크를 채워 넣지 않는다(저장 시 덮어쓰기 방지).
+            try:
+                cur_url = get_form_url()
+                cur_yt = get_youtube_url()
+                _conf_ok = True
+            except SheetBusy:
+                cur_url, cur_yt, _conf_ok = "", "", False
+                st.warning("설정 시트를 지금 읽지 못했습니다 — 잠시 후 새로고침해 주세요. 이 상태에서는 저장하지 마세요.")
             new_url = st.text_input("구글폼 링크", value=cur_url, key="form_url_input")
-            if st.button("구글폼 링크 저장"):
+            if st.button("구글폼 링크 저장", disabled=not _conf_ok):
                 if set_form_url(new_url):
                     st.success("저장 완료")
                     st.rerun()
 
             st.divider()
             st.caption("🎬 회차 유튜브 다시보기 링크")
-            cur_yt = get_youtube_url()
             new_yt = st.text_input(
                 "유튜브 다시보기 링크",
                 value=cur_yt,
@@ -419,12 +470,12 @@ if IS_ADMIN:
             )
             yt_c1, yt_c2 = st.columns(2)
             with yt_c1:
-                if st.button("유튜브 링크 저장"):
+                if st.button("유튜브 링크 저장", disabled=not _conf_ok):
                     if set_youtube_url(new_yt.strip()):
                         st.success("저장 완료")
                         st.rerun()
             with yt_c2:
-                if st.button("유튜브 링크 비우기"):
+                if st.button("유튜브 링크 비우기", disabled=not _conf_ok):
                     if set_youtube_url(""):
                         st.success("비움 (폴백 모드)")
                         st.rerun()
@@ -481,7 +532,7 @@ st.markdown(
 
 # 상태 관리
 if "status" not in st.session_state:
-    st.session_state["status"] = None  # None / "success" / "error" / "dup"
+    st.session_state["status"] = None  # None / "success" / "error" / "dup" / "retry"(#2026-219W)
     st.session_state["status_time"] = 0
     st.session_state["status_msg"] = ""
 
@@ -498,7 +549,7 @@ if status == "success":
                 unsafe_allow_html=True)
     time.sleep(1)
     st.rerun()
-elif status == "dup":
+elif status in ("dup", "retry"):
     st.markdown(f"<div class='warn-box'>⚠ {st.session_state['status_msg']}</div>",
                 unsafe_allow_html=True)
     time.sleep(1)
