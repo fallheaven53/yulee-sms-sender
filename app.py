@@ -17,8 +17,25 @@ from google.oauth2.service_account import Credentials
 
 IS_ADMIN = st.query_params.get("admin", "") == "true"
 
+# #2026-228W 행사 구분 — 주소 뒤 ?event=<키>가 있으면 그 행사의 제목·부제·설문 링크 키·
+# 기록 탭을 쓴다. 표시가 없거나 모르는 키면 None → 토요상설 기존 화면·저장 그대로.
+# 새 행사는 이 표에 한 줄 추가 + SMS_설정 탭에 form_key 행 하나면 끝난다.
+# msg_name은 문자 본문 첫 줄 «[광주문화재단] <msg_name>»이 되고, 워커가 이 줄로
+# LMS 제목 «<msg_name> 만족도조사»를 만든다(sms_worker.subject_from_text).
+EVENTS = {
+    "mudeung": {
+        "page_title": "무등울림 관람 등록",
+        "title": "📋 무등울림 관람 등록",
+        "subtitle": "전화번호를 입력하시면 설문 링크를<br>문자로 보내드립니다",
+        "form_key": "mudeung_form_url",
+        "msg_name": "무등울림축제",
+        "log_sheet": "무등울림2026",
+    },
+}
+EVENT = EVENTS.get(st.query_params.get("event", ""))
+
 st.set_page_config(
-    page_title="2026 토요상설공연 만족도 조사",
+    page_title=EVENT["page_title"] if EVENT else "2026 토요상설공연 만족도 조사",
     page_icon="📱",
     layout="centered",
     initial_sidebar_state="expanded" if IS_ADMIN else "collapsed",
@@ -64,8 +81,18 @@ MSG_TEMPLATE_FULL = (
 )
 
 
-def build_message(form_url, youtube_url=None):
-    """발송 본문 조립. 유튜브 링크가 비어 있으면 BASE(만족도만)로 폴백."""
+MSG_TEMPLATE_EVENT = (
+    "[광주문화재단] {name}\n"
+    "만족도 조사에 참여해 주세요.\n"
+    "{form_url}"
+)
+
+
+def build_message(form_url, youtube_url=None, event=None):
+    """발송 본문 조립. 유튜브 링크가 비어 있으면 BASE(만족도만)로 폴백.
+    #2026-228W: 행사(event)면 행사명 본문, 유튜브 링크 없음."""
+    if event:
+        return MSG_TEMPLATE_EVENT.format(name=event["msg_name"], form_url=form_url)
     yu = (youtube_url or "").strip()
     if yu:
         return MSG_TEMPLATE_FULL.format(form_url=form_url, youtube_url=yu)
@@ -284,15 +311,32 @@ def enqueue_sms(phone, payload):
         return None
 
 
-def send_sms(phone, form_url, youtube_url=None):
+def send_sms(phone, form_url, youtube_url=None, event=None):
     """#2026-164W: 릴레이 CF 호출 대신 SMS_발송큐 시트에 발송 요청을 기록한다.
     사무실 PC의 sms_worker.py가 폴링해 슈어엠 API로 실제 발송한다.
     반환 시그니처(ok, msg)는 릴레이 방식과 동일하게 유지."""
-    text = build_message(form_url, youtube_url)
+    text = build_message(form_url, youtube_url, event)
     req_id = enqueue_sms(phone, text)
+    if event:
+        log_event(event, phone, f"요청 접수 {req_id}" if req_id else "요청 저장 실패")
     if not req_id:
         return False, "발송 요청 저장 실패 (시트 큐)"
     return True, "발송 요청 접수"
+
+
+def log_event(event, phone, result):
+    """#2026-228W 행사 등록을 행사 전용 탭에 따로 남긴다(기존 탭과 같은 열 LOG_COLS).
+    큐는 워커가 읽는 SMS_발송큐를 그대로 쓰고, 실제 발송 결과는 워커가 SMS_발송기록에 쓴다.
+    이 탭의 «결과»는 큐 접수 여부(요청ID로 큐·발송기록과 맞춰 볼 수 있음). 기록 실패는 등록을 막지 않는다."""
+    sh = get_sheet()
+    if sh is None:
+        return
+    try:
+        ws = _ws(sh, event["log_sheet"], LOG_COLS)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([now, clean_phone(phone), result], value_input_option="RAW")
+    except Exception:
+        pass
 
 
 def log_to_sheet(phone, result):
@@ -340,8 +384,13 @@ def _process_registration(raw):
     try:
         is_dup = is_duplicate_today(clean)
         if not is_dup:
-            form_url = get_form_url()
-            youtube_url = get_youtube_url()
+            if EVENT:
+                # #2026-228W 행사 링크는 기본값으로 대체하지 않는다(비어 있으면 아래에서 «미설정» 안내).
+                form_url = _conf_value(EVENT["form_key"], "")
+                youtube_url = None
+            else:
+                form_url = get_form_url()
+                youtube_url = get_youtube_url()
     except SheetBusy:
         st.session_state["status"] = "retry"
         st.session_state["status_msg"] = "잠시 후 다시 시도해 주세요"
@@ -356,7 +405,7 @@ def _process_registration(raw):
             st.session_state["status"] = "error"
             st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
         else:
-            ok, result = send_sms(clean, form_url, youtube_url)
+            ok, result = send_sms(clean, form_url, youtube_url, EVENT)
             if not ok:
                 log_to_sheet(clean, result)
             if ok:
@@ -524,9 +573,12 @@ if IS_ADMIN:
 #  메인 화면
 # ══════════════════════════════════════════════════════════════
 
-st.markdown("<h1>📋 토요상설공연 관람 등록</h1>", unsafe_allow_html=True)
+st.markdown(f"<h1>{EVENT['title'] if EVENT else '📋 토요상설공연 관람 등록'}</h1>",
+            unsafe_allow_html=True)
 st.markdown(
-    "<div class='subtitle'>전화번호를 입력하시면 설문 링크와<br>유튜브 링크를 문자로 보내드립니다</div>",
+    "<div class='subtitle'>%s</div>" % (
+        EVENT["subtitle"] if EVENT else
+        "전화번호를 입력하시면 설문 링크와<br>유튜브 링크를 문자로 보내드립니다"),
     unsafe_allow_html=True,
 )
 
