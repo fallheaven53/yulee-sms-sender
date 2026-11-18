@@ -22,7 +22,28 @@ IS_ADMIN = st.query_params.get("admin", "") == "true"
 # 새 행사는 이 표에 한 줄 추가 + SMS_설정 탭에 form_key 행 하나면 끝난다.
 # msg_name은 문자 본문 첫 줄 «[광주문화재단] <msg_name>»이 되고, 워커가 이 줄로
 # LMS 제목 «<msg_name> 만족도조사»를 만든다(sms_worker.subject_from_text).
+# #2026-483W body가 있는 행사는 자리표시 본문을 큐에 넣고, 워커가 발송 시점에 값을 채운다.
+MSG_TEMPLATE_WINTER = (
+    "[광주문화재단] 빛고을 겨울축제\n"
+    "빛고을 겨울축제에 오신 것을 환영합니다.\n"
+    "\n"
+    "▶ 무대 가까이 보기(유튜브 라이브)\n"
+    "{LIVE_URL}\n"
+    "\n"
+    "▶ 공연이 끝나면 만족도 조사에 참여해 주세요.\n"
+    "{SURVEY_URL}\n"
+    "\n"
+    "문의 {CONTACT_TEL}\n"
+    "수신거부: {OPTOUT_TEL}로 «거부» 회신"
+)
 EVENTS = {
+    "winter": {
+        "page_title": "빛고을 겨울축제 관람 등록",
+        "title": "📋 빛고을 겨울축제",
+        "subtitle": "전화번호를 입력하시면 공연 안내를<br>문자로 보내드립니다",
+        "body": MSG_TEMPLATE_WINTER,
+        "log_sheet": "겨울축제2026",
+    },
     "mudeung": {
         "page_title": "무등울림 관람 등록",
         "title": "📋 무등울림 관람 등록",
@@ -92,6 +113,8 @@ def build_message(form_url, youtube_url=None, event=None):
     """발송 본문 조립. 유튜브 링크가 비어 있으면 BASE(만족도만)로 폴백.
     #2026-228W: 행사(event)면 행사명 본문, 유튜브 링크 없음."""
     if event:
+        if event.get("body"):
+            return event["body"]
         return MSG_TEMPLATE_EVENT.format(name=event["msg_name"], form_url=form_url)
     yu = (youtube_url or "").strip()
     if yu:
@@ -368,6 +391,20 @@ def is_duplicate_today(phone):
     return False
 
 
+def phone_waiting(rows, phone):
+    """#2026-483W 큐에 같은 번호의 미처리 건이 있는가(보류 중 재등록 → 두 통 방지)."""
+    return any(len(r) >= 5 and clean_phone(r[2]) == phone and r[4] in ("대기", "처리중")
+               for r in rows[1:])
+
+
+def is_in_queue(phone):
+    sh = get_sheet_safe()
+    if sh is None:
+        return False
+    return phone_waiting(
+        _read_with_retry(lambda: _ws(sh, QUEUE_SHEET_NAME, QUEUE_COLS).get_all_values()), phone)
+
+
 def _process_registration(raw):
     """#2026-112W 완성 번호 등록 처리(검증·중복·발송·기록). status만 세팅, rerun은 호출부.
     구 form(?phone=)·키오스크 버튼 그리드 공용 진입점.
@@ -381,9 +418,14 @@ def _process_registration(raw):
         return
     # #2026-219W: 중복 확인·설정 조회를 시트 한도 때문에 못 하면 큐에 넣지 않고 다시 누르게 한다.
     # 입력한 번호는 키패드에 되살려 두어 «확인»만 다시 누르면 된다.
+    deferred = bool(EVENT and EVENT.get("body"))
+    queued = False
+    form_url, youtube_url = "", None
     try:
         is_dup = is_duplicate_today(clean)
-        if not is_dup:
+        if deferred and not is_dup:
+            queued = is_in_queue(clean)
+        if not is_dup and not deferred:
             if EVENT:
                 # #2026-228W 행사 링크는 기본값으로 대체하지 않는다(비어 있으면 아래에서 «미설정» 안내).
                 form_url = _conf_value(EVENT["form_key"], "")
@@ -400,8 +442,11 @@ def _process_registration(raw):
     if is_dup:
         st.session_state["status"] = "dup"
         st.session_state["status_msg"] = "이미 발송된 번호입니다"
+    elif queued:
+        st.session_state["status"] = "dup"
+        st.session_state["status_msg"] = "이미 등록된 번호입니다"
     else:
-        if not form_url:
+        if not form_url and not deferred:
             st.session_state["status"] = "error"
             st.session_state["status_msg"] = "설문 링크가 설정되지 않았습니다"
         else:
@@ -410,7 +455,9 @@ def _process_registration(raw):
                 log_to_sheet(clean, result)
             if ok:
                 st.session_state["status"] = "success"
-                st.session_state["status_msg"] = "문자가 발송되었습니다. 감사합니다!"
+                st.session_state["status_msg"] = (
+                    "등록되었습니다. 안내 문자를 보내드립니다." if deferred
+                    else "문자가 발송되었습니다. 감사합니다!")
             else:
                 st.session_state["status"] = "error"
                 st.session_state["status_msg"] = f"발송 실패: {result}"
