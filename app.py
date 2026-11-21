@@ -36,6 +36,8 @@ MSG_TEMPLATE_WINTER = (
     "문의 {CONTACT_TEL}\n"
     "수신거부: {OPTOUT_TEL}로 «거부» 회신"
 )
+# #2026-501W 개정2 월례회 본문(마스터 확정 전문) — 자리표시 없음, 워커가 그대로 보낸다.
+MSG_TEMPLATE_MONTHLY = "[광주문화재단] 11월 월례회\n참여등록이 완료되었습니다."
 EVENTS = {
     "winter": {
         "page_title": "빛고을 겨울축제 관람 등록",
@@ -51,6 +53,13 @@ EVENTS = {
         "form_key": "mudeung_form_url",
         "msg_name": "무등울림축제",
         "log_sheet": "무등울림2026",
+    },
+    # #2026-501W 월례회 — 본문만 큐에 넣는다. log_sheet 없음 → 행사 탭 기록 안 함(winter·434W 입력 탭과 분리)
+    "monthly": {
+        "page_title": "11월 월례회 참여등록",
+        "title": "📋 11월 월례회 참여등록",
+        "subtitle": "전화번호를 입력하시면<br>참여 등록이 됩니다",
+        "body": MSG_TEMPLATE_MONTHLY,
     },
 }
 EVENT = EVENTS.get(st.query_params.get("event", ""))
@@ -351,6 +360,8 @@ def log_event(event, phone, result):
     """#2026-228W 행사 등록을 행사 전용 탭에 따로 남긴다(기존 탭과 같은 열 LOG_COLS).
     큐는 워커가 읽는 SMS_발송큐를 그대로 쓰고, 실제 발송 결과는 워커가 SMS_발송기록에 쓴다.
     이 탭의 «결과»는 큐 접수 여부(요청ID로 큐·발송기록과 맞춰 볼 수 있음). 기록 실패는 등록을 막지 않는다."""
+    if not event.get("log_sheet"):
+        return
     sh = get_sheet()
     if sh is None:
         return
