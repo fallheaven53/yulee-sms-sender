@@ -37,7 +37,7 @@ MSG_TEMPLATE_WINTER = (
     "수신거부: {OPTOUT_TEL}로 «거부» 회신"
 )
 # #2026-501W 개정2 월례회 본문(마스터 확정 전문) — 자리표시 없음, 워커가 그대로 보낸다.
-MSG_TEMPLATE_MONTHLY = "[광주문화재단] 11월 월례회\n참여등록이 완료되었습니다."
+MSG_TEMPLATE_MONTHLY = "[광주문화재단] 12월 월례회\n참여등록이 완료되었습니다."
 EVENTS = {
     "winter": {
         "page_title": "빛고을 겨울축제 관람 등록",
@@ -56,12 +56,17 @@ EVENTS = {
     },
     # #2026-501W 월례회 — 본문만 큐에 넣는다. log_sheet 없음 → 행사 탭 기록 안 함(winter·434W 입력 탭과 분리)
     "monthly": {
-        "page_title": "11월 월례회 참여등록",
-        "title": "📋 11월 월례회 참여등록",
+        "page_title": "12월 월례회 참여등록",
+        "title": "📋 12월 월례회 참여등록",
         "subtitle": "전화번호를 입력하시면<br>참여 등록이 됩니다",
         "body": MSG_TEMPLATE_MONTHLY,
+        # #2026-501W 개정3 하단 안내 — monthly만. 다른 행사·기본 화면은 FOOTER_DEFAULT
+        "footer": "입력하신 번호는 월례회 참여 확인 문자 발송에만 사용됩니다.<br>"
+                  "발송 기록은 월례회 당일 기준으로만 보관됩니다.",
     },
 }
+FOOTER_DEFAULT = ("입력하신 번호는 만족도 조사 링크 발송에만 사용됩니다.<br>"
+                  "발송 기록은 해당 공연일 기준으로만 보관됩니다.")
 EVENT = EVENTS.get(st.query_params.get("event", ""))
 
 st.set_page_config(
@@ -735,7 +740,6 @@ else:
         st.rerun()
 
 st.markdown(
-    "<div class='footer'>입력하신 번호는 만족도 조사 링크 발송에만 사용됩니다.<br>"
-    "발송 기록은 해당 공연일 기준으로만 보관됩니다.</div>",
+    "<div class='footer'>%s</div>" % (EVENT or {}).get("footer", FOOTER_DEFAULT),
     unsafe_allow_html=True,
 )
